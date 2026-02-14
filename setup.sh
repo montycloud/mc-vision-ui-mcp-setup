@@ -442,7 +442,7 @@ configure_env() {
     echo ""
     echo -e "${BOLD}Configure your environment${NC}"
     echo ""
-    echo "  You need two keys. If you don't have them, ask your team lead."
+    echo "  You need two keys. If you don't have them, ask your Nitheish."
     echo ""
     echo -e "  ${YELLOW}1. GitHub Personal Access Token${NC}"
     echo "     Needed to clone the Vision UI and MontyCloud repos."
@@ -451,7 +451,7 @@ configure_env() {
     echo ""
 
     prompt_user "  GitHub token (ghp_...): " GIT_TOKEN
-    [ -z "${GIT_TOKEN:-}" ] && die "GitHub token is required. Ask your team lead if you don't have one."
+    [ -z "${GIT_TOKEN:-}" ] && die "GitHub token is required. Ask your Nitheish if you don't have one."
 
     echo ""
     echo -e "  ${YELLOW}2. OpenAI API Key${NC}"
@@ -460,7 +460,7 @@ configure_env() {
     echo ""
 
     prompt_user "  OpenAI API key (sk-...): " OPENAI_API_KEY
-    [ -z "${OPENAI_API_KEY:-}" ] && die "OpenAI API key is required. Ask your team lead if you don't have one."
+    [ -z "${OPENAI_API_KEY:-}" ] && die "OpenAI API key is required. Ask your Nitheish if you don't have one."
 
     # Escape special characters for safe sed substitution
     local escaped_git_token escaped_api_key
@@ -629,7 +629,7 @@ print_success() {
     echo "    Update:    cd ~/vision-ui-mcp && docker compose pull && docker compose up -d"
     echo "    Uninstall: cd ~/vision-ui-mcp && docker compose down -v && rm -rf ~/vision-ui-mcp"
     echo ""
-    echo "  Need help? Ask your team lead or check the README in $INSTALL_DIR"
+    echo "  Need help? Ask your Nitheish or check the README in $INSTALL_DIR"
     echo ""
 }
 
