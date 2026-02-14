@@ -120,29 +120,23 @@ Docker on Windows requires **WSL2** (Windows Subsystem for Linux). Here's the fu
 
 ## Manual Setup
 
-If you prefer to set things up step by step:
+If you prefer to do everything step by step (installing Docker, cloning, configuring, verifying), follow the full guide:
+
+**[Manual Setup Guide →](MANUAL_SETUP.md)**
+
+It covers every step from scratch — installing git, Docker, configuring environment variables, pulling images, starting services, connecting your editor, and verifying everything works. Written for people who've never used Docker before.
+
+**Quick version** (if you already have Docker running):
 
 ```bash
-# 1. Clone the setup repo
 git clone https://github.com/montycloud/mc-vision-ui-mcp-setup.git ~/vision-ui-mcp
 cd ~/vision-ui-mcp
-
-# 2. Create your .env file
 cp .env.example .env
-
-# 3. Edit .env — fill in GIT_TOKEN and OPENAI_API_KEY
-#    On Mac:  open -e .env
-#    On Linux: nano .env
-
-# 4. Log into GitHub Container Registry
-echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-
-# 5. Start the stack
+# Edit .env — fill in GIT_TOKEN and OPENAI_API_KEY
+echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 docker compose up -d
-
-# 6. Wait 3-5 minutes for first-time indexing, then verify
-docker compose ps        # All services should be "healthy" or "running"
-docker compose logs -f   # Watch real-time logs
+# Wait 3-5 minutes, then verify:
+docker compose ps
 ```
 
 ---
@@ -193,8 +187,9 @@ In Copilot Chat or Claude Code, try: **"Search for Button component"** — you s
 
 | Tool | What It Does |
 |------|-------------|
+| `get_conventions` | Coding standards, naming rules, known inconsistencies — call first before generating code |
 | `search` | Semantic search across component metadata and source code |
-| `get_component` | Full component details — props, variants, examples, usage, source |
+| `get_component` | Full component details — props, variants, examples, usage, source (includes conventions) |
 | `get_source` | Complete source code of any file from either repo |
 | `list_components` | All components grouped by category |
 
