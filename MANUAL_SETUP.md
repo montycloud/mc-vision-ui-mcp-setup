@@ -152,7 +152,7 @@ cd ~/vision-ui-mcp
 ```bash
 ls ~/vision-ui-mcp/
 ```
-You should see: `docker-compose.yml`, `.env.example`, `init.sql`, `setup.sh`, `docs/`, `README.md`.
+You should see: `docker-compose.yml`, `.env.example`, `init.sql`, `setup.sh`, `docs/`, `README.md`, `MANUAL_SETUP.md`.
 
 ---
 

@@ -6,7 +6,7 @@ Connect the **Vision UI component library** to your AI coding tools (GitHub Copi
 
 ## Before You Start
 
-You'll need **two things** ready (ask your team lead if you don't have them):
+You'll need **two things** ready (ask Nitheish if you don't have them):
 
 1. **GitHub Personal Access Token** — so Docker can pull our private container images and the server can clone component repos.
    Create one at [github.com/settings/tokens](https://github.com/settings/tokens) with `repo` and `read:packages` scopes.
@@ -189,7 +189,7 @@ In Copilot Chat or Claude Code, try: **"Search for Button component"** — you s
 |------|-------------|
 | `get_conventions` | Coding standards, naming rules, known inconsistencies — call first before generating code |
 | `search` | Semantic search across component metadata and source code |
-| `get_component` | Full component details — props, variants, examples, usage, source (includes conventions) |
+| `get_component` | Full component details — props, variants, examples, usage, source |
 | `get_source` | Complete source code of any file from either repo |
 | `list_components` | All components grouped by category |
 
