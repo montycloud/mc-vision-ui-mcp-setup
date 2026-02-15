@@ -6,7 +6,7 @@ Connect the **Vision UI component library** to your AI coding tools (GitHub Copi
 
 ## Before You Start
 
-You'll need **two things** ready (ask Nitheish if you don't have them):
+You'll need **two things** ready (contact your team lead if you need access):
 
 1. **GitHub Personal Access Token** — so Docker can pull our private container images and the server can clone component repos.
    Create one at [github.com/settings/tokens](https://github.com/settings/tokens) with `repo` and `read:packages` scopes.

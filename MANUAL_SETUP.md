@@ -184,8 +184,13 @@ GIT_TOKEN=ghp_xxxxxxxxxxxxxx
 # Choose ONE embedding provider:
 # Option A: AWS Bedrock (recommended for MontyCloud team)
 EMBEDDING_PROVIDER=bedrock
-AWS_BEARER_TOKEN_BEDROCK=ABSK...
 AWS_DEFAULT_REGION=us-east-1
+#   A1 — Long-term API key (recommended, no expiry):
+AWS_BEARER_TOKEN_BEDROCK=ABSK...
+#   A2 — Short-term session credentials (from SSO/STS, expires):
+# AWS_ACCESS_KEY_ID=ASIA...
+# AWS_SECRET_ACCESS_KEY=...
+# AWS_SESSION_TOKEN=...
 
 # Option B: OpenAI
 # EMBEDDING_PROVIDER=openai
@@ -200,15 +205,20 @@ AWS_DEFAULT_REGION=us-east-1
    - Give it a name like "Vision UI MCP"
    - Select scopes: `repo` and `read:packages`
    - Click "Generate token" and copy it
-   - If you don't have access to the montycloud org repos, ask Nitheish
+   - If you don't have access to the montycloud org repos, contact your team lead
 
 2. **Embedding Provider Key** — choose one:
-   - **AWS Bedrock API Key** (recommended)
+   - **AWS Bedrock — Long-term API key** (recommended, simplest)
      - Log into the AWS Console (via myapps.microsoft.com → AWS)
      - Go to Amazon Bedrock → API keys (left sidebar)
      - Click "Generate long-term API key"
      - Copy the key (starts with `ABSK...`)
      - Set `EMBEDDING_PROVIDER=bedrock` and `AWS_BEARER_TOKEN_BEDROCK=your_key` in `.env`
+   - **AWS Bedrock — Short-term session credentials** (from SSO or STS)
+     - Run `aws sso login` then `aws configure export-credentials --format env`
+     - Copy `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` into `.env`
+     - Set `EMBEDDING_PROVIDER=bedrock` in `.env`
+     - Note: these expire — you'll need to refresh and restart when they do
    - **OpenAI API Key**
      - Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
      - Click "Create new secret key" and copy it
@@ -216,7 +226,7 @@ AWS_DEFAULT_REGION=us-east-1
 
 Save the file and close the editor. If using `nano`, press `Ctrl+O` to save, then `Ctrl+X` to exit.
 
-**Do not change** the other values unless Nitheish tells you to. The defaults are correct.
+**Do not change** the other values — the defaults are correct for most setups.
 
 **Verify:**
 ```bash
@@ -248,7 +258,7 @@ echo ghp_abc123def456 | docker login ghcr.io -u johndoe --password-stdin
 If it fails:
 - Make sure your token has `read:packages` scope
 - Make sure you're a member of the [montycloud](https://github.com/montycloud) GitHub org
-- Ask Nitheish for help
+- Contact your team lead for access if needed
 
 ---
 
@@ -404,7 +414,7 @@ You don't need to start Docker manually on Mac/Windows — Docker Desktop auto-s
 
 ## Updating
 
-When Nitheish announces a new version:
+When a new version is announced:
 
 **Standard update (most of the time):**
 ```bash
@@ -413,7 +423,7 @@ docker compose pull
 docker compose up -d
 ```
 
-**Schema change update (Nitheish will tell you if this is needed):**
+**Schema change update (release notes will indicate if needed):**
 ```bash
 cd ~/vision-ui-mcp
 docker compose pull
@@ -482,7 +492,7 @@ You're in the wrong directory. Always `cd ~/vision-ui-mcp` before running `docke
 docker compose logs mcp-server
 ```
 Check for:
-- Invalid API key → check `OPENAI_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` in `.env`, then `docker compose down && docker compose up -d`
+- Invalid API key → check `OPENAI_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` (or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` if using short-term credentials) in `.env`, then `docker compose down && docker compose up -d`
 - Indexer still running → wait for it to finish
 - Database connection error → check that postgres is healthy with `docker compose ps`
 
@@ -496,7 +506,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Still stuck? Send Nitheish the output of:
+Still stuck? Share the following output with your team lead:
 ```bash
 docker compose ps
 docker compose logs --tail=50
