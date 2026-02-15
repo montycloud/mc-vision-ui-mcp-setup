@@ -241,6 +241,37 @@ prompt_user() {
     fi
 }
 
+# Silent input for secrets (API keys, tokens) — hides typed/pasted text,
+# shows a masked preview after entry. Avoids the terminal flood caused by
+# pasting 1000+ character Bedrock short-term keys.
+prompt_secret() {
+    local prompt_text="$1"
+    local var_name="$2"
+    local hint="${3:-}"   # e.g. "ABSK..." or "ghp_..."
+
+    if [ -t 0 ]; then
+        printf "%b" "$prompt_text"
+        read -rs "$var_name"
+        echo ""  # newline after silent read
+    elif [ -e /dev/tty ]; then
+        printf "%b" "$prompt_text" > /dev/tty
+        read -rs "$var_name" < /dev/tty
+        echo "" > /dev/tty
+    else
+        echo ""
+        fail "Cannot read input — no terminal available."
+        exit 1
+    fi
+
+    # Show masked preview so the user knows something was captured
+    local value="${!var_name}"
+    if [ -n "$value" ]; then
+        local len=${#value}
+        local prefix="${value:0:8}"
+        echo -e "  ${DIM}  Received: ${prefix}$( [ "$len" -gt 8 ] && echo "••••••••" )${NC} ${DIM}(${len} chars)${NC}"
+    fi
+}
+
 # ──────────────────────────────────────────────
 # Pre-flight: Check system requirements
 # ──────────────────────────────────────────────
@@ -507,12 +538,28 @@ download_files() {
     fi
 }
 
-# ──────────────────────────────────────────────
-# Escape special characters for sed replacement
-# ──────────────────────────────────────────────
-
-sed_escape() {
-    printf '%s' "$1" | sed -e 's/[\\\/&|]/\\&/g'
+# Safely set KEY=VALUE in a .env file. Works for any value length (including
+# 1000+ char Bedrock short-term tokens) without sed line-length limits.
+# Usage: env_set .env KEY VALUE
+env_set() {
+    local file="$1" key="$2" value="$3"
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        # Key exists (uncommented) — replace the line
+        local tmp="${file}.tmp.$$"
+        awk -v k="$key" -v v="$value" 'BEGIN{FS=OFS="="} $1==k{print k"="v; next} {print}' "$file" > "$tmp"
+        mv "$tmp" "$file"
+    elif grep -q "^# *${key}=" "$file" 2>/dev/null; then
+        # Key exists (commented out) — uncomment and set
+        local tmp="${file}.tmp.$$"
+        awk -v k="$key" -v v="$value" '{
+            if ($0 ~ "^# *" k "=") { print k "=" v }
+            else { print }
+        }' "$file" > "$tmp"
+        mv "$tmp" "$file"
+    else
+        # Key doesn't exist — append
+        echo "${key}=${value}" >> "$file"
+    fi
 }
 
 # ──────────────────────────────────────────────
@@ -531,9 +578,9 @@ configure_env() {
     echo -e "  ${DIM}Required scopes: repo (read access), read:packages${NC}"
     echo ""
 
-    prompt_user "  ${BOLD}GitHub token (ghp_...):${NC} " GIT_TOKEN
+    prompt_secret "  ${BOLD}GitHub token (ghp_...):${NC} " GIT_TOKEN "ghp_"
     [ -z "${GIT_TOKEN:-}" ] && die "GitHub token is required. Create one at: https://github.com/settings/tokens (scopes: repo, read:packages)"
-    ok "GitHub token set"
+    ok "GitHub token saved"
 
     echo ""
     echo -e "  ${YELLOW}${BOLD}2. Embedding Provider${NC}"
@@ -546,13 +593,10 @@ configure_env() {
     prompt_user "  Enter 1 or 2 [1]: " EMBEDDING_CHOICE
     EMBEDDING_CHOICE="${EMBEDDING_CHOICE:-1}"
 
-    local escaped_git_token
-    escaped_git_token=$(sed_escape "$GIT_TOKEN")
-
     if [[ "$EMBEDDING_CHOICE" == "2" ]]; then
-        configure_bedrock "$escaped_git_token"
+        configure_bedrock
     else
-        configure_openai "$escaped_git_token"
+        configure_openai
     fi
 }
 
@@ -561,8 +605,6 @@ configure_env() {
 # ──────────────────────────────────────────────
 
 configure_bedrock() {
-    local escaped_git_token="$1"
-
     echo ""
     echo -e "  ${CYAN}${BOLD}AWS Bedrock Setup${NC}"
     echo ""
@@ -585,9 +627,6 @@ configure_bedrock() {
     prompt_user "  AWS region for Bedrock [us-east-1]: " BEDROCK_REGION
     BEDROCK_REGION="${BEDROCK_REGION:-us-east-1}"
 
-    local escaped_region
-    escaped_region=$(sed_escape "$BEDROCK_REGION")
-
     if [[ "$key_type" == "b" || "$key_type" == "B" ]]; then
         # --- Short-term API key (bearer token, ≤12h) ---
         echo ""
@@ -598,25 +637,14 @@ configure_bedrock() {
         echo -e "    ${DIM}4. Copy the key (starts with bedrock-api-key-...)${NC}"
         echo ""
 
-        prompt_user "  Bedrock short-term API key: " BEDROCK_API_KEY
+        prompt_secret "  ${BOLD}Bedrock short-term API key:${NC} " BEDROCK_API_KEY
         [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console → Amazon Bedrock → API keys."
 
-        local escaped_key
-        escaped_key=$(sed_escape "$BEDROCK_API_KEY")
-
-        if [ "$OS" = "macos" ]; then
-            sed -i '' "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
-            sed -i '' "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
-            sed -i '' "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
-            sed -i '' "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
-            sed -i '' "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
-        else
-            sed -i "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
-            sed -i "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
-            sed -i "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
-            sed -i "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
-            sed -i "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
-        fi
+        # Write .env — use env_set (not sed) so 1000+ char keys work reliably
+        env_set .env GIT_TOKEN "$GIT_TOKEN"
+        env_set .env EMBEDDING_PROVIDER "bedrock"
+        env_set .env AWS_BEARER_TOKEN_BEDROCK "$BEDROCK_API_KEY"
+        env_set .env AWS_DEFAULT_REGION "$BEDROCK_REGION"
 
         echo ""
         warn "Short-term API keys expire within 12 hours. When it expires:"
@@ -635,25 +663,14 @@ configure_bedrock() {
         echo -e "    ${DIM}4. Copy the key (starts with ABSK...)${NC}"
         echo ""
 
-        prompt_user "  Bedrock API key (ABSK...): " BEDROCK_API_KEY
+        prompt_secret "  ${BOLD}Bedrock API key (ABSK...):${NC} " BEDROCK_API_KEY
         [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console → Amazon Bedrock → API keys."
 
-        local escaped_key
-        escaped_key=$(sed_escape "$BEDROCK_API_KEY")
-
-        if [ "$OS" = "macos" ]; then
-            sed -i '' "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
-            sed -i '' "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
-            sed -i '' "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
-            sed -i '' "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
-            sed -i '' "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
-        else
-            sed -i "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
-            sed -i "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
-            sed -i "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
-            sed -i "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
-            sed -i "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
-        fi
+        # Write .env
+        env_set .env GIT_TOKEN "$GIT_TOKEN"
+        env_set .env EMBEDDING_PROVIDER "bedrock"
+        env_set .env AWS_BEARER_TOKEN_BEDROCK "$BEDROCK_API_KEY"
+        env_set .env AWS_DEFAULT_REGION "$BEDROCK_REGION"
 
         echo ""
         ok "Configured for AWS Bedrock (long-term API key, region: ${BEDROCK_REGION})"
@@ -665,26 +682,17 @@ configure_bedrock() {
 # ──────────────────────────────────────────────
 
 configure_openai() {
-    local escaped_git_token="$1"
-
     echo ""
     echo -e "  ${GREEN}${BOLD}OpenAI API Key${NC}"
     echo -e "  ${DIM}Get one at: https://platform.openai.com/api-keys${NC}"
     echo ""
 
-    prompt_user "  OpenAI API key (sk-...): " OPENAI_API_KEY
+    prompt_secret "  ${BOLD}OpenAI API key (sk-...):${NC} " OPENAI_API_KEY
     [ -z "${OPENAI_API_KEY:-}" ] && die "OpenAI API key is required. Get one at: https://platform.openai.com/api-keys"
 
-    local escaped_api_key
-    escaped_api_key=$(sed_escape "$OPENAI_API_KEY")
-
-    if [ "$OS" = "macos" ]; then
-        sed -i '' "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
-        sed -i '' "s|OPENAI_API_KEY=sk-your_openai_api_key|OPENAI_API_KEY=${escaped_api_key}|" .env
-    else
-        sed -i "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
-        sed -i "s|OPENAI_API_KEY=sk-your_openai_api_key|OPENAI_API_KEY=${escaped_api_key}|" .env
-    fi
+    # Write .env
+    env_set .env GIT_TOKEN "$GIT_TOKEN"
+    env_set .env OPENAI_API_KEY "$OPENAI_API_KEY"
 
     ok "Configured for OpenAI"
 }
