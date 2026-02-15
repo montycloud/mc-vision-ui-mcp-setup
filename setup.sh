@@ -48,8 +48,24 @@ else
     HIDE_CURSOR='' SHOW_CURSOR='' CLEAR_LINE=''
 fi
 
-# Ensure cursor is restored on exit
-trap 'printf "${SHOW_CURSOR}"' EXIT
+# Ensure cursor is restored on exit; show error location if set -e fires
+cleanup() {
+    local exit_code=$?
+    printf "${SHOW_CURSOR}"
+    # Kill any orphaned spinner
+    if [ -n "${SPINNER_PID:-}" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
+        kill "$SPINNER_PID" 2>/dev/null || true
+        wait "$SPINNER_PID" 2>/dev/null || true
+    fi
+    if [ "$exit_code" -ne 0 ]; then
+        echo ""
+        echo -e "  ${RED}✗ Setup failed (exit code ${exit_code})${NC}"
+        echo -e "  ${DIM}If the error is unclear, re-run with:  bash -x setup.sh${NC}"
+        echo ""
+    fi
+}
+trap cleanup EXIT
+trap 'echo -e "\n  ${RED}✗ Error on line ${LINENO}:${NC} command exited with code $?"' ERR
 
 info()  { echo -e "  ${BLUE}ℹ${NC}  $1"; }
 ok()    { echo -e "  ${GREEN}✓${NC}  $1"; }
@@ -137,6 +153,33 @@ typewrite() {
         sleep "$delay"
     done
     echo ""
+}
+
+# Run a command with a timeout (portable — works on macOS without coreutils)
+# Usage: with_timeout 30 docker login ...
+# Returns 124 on timeout, otherwise the command's exit code.
+with_timeout() {
+    local secs="$1"
+    shift
+    "$@" &
+    local cmd_pid=$!
+    (
+        sleep "$secs"
+        kill "$cmd_pid" 2>/dev/null || true
+    ) &
+    local timer_pid=$!
+    if wait "$cmd_pid" 2>/dev/null; then
+        kill "$timer_pid" 2>/dev/null || true
+        wait "$timer_pid" 2>/dev/null || true
+        return 0
+    else
+        local rc=$?
+        kill "$timer_pid" 2>/dev/null || true
+        wait "$timer_pid" 2>/dev/null || true
+        # 143 = killed by our timer (128 + 15 SIGTERM)
+        [ "$rc" -eq 143 ] && return 124
+        return "$rc"
+    fi
 }
 
 # Animated countdown
@@ -239,6 +282,11 @@ prompt_user() {
         echo ""
         exit 1
     fi
+
+    # Strip trailing carriage returns (clipboard paste artefact)
+    local raw="${!var_name}"
+    raw="${raw%$'\r'}"
+    printf -v "$var_name" '%s' "$raw"
 }
 
 # Silent input for secrets (API keys, tokens) — hides typed/pasted text,
@@ -262,6 +310,11 @@ prompt_secret() {
         fail "Cannot read input — no terminal available."
         exit 1
     fi
+
+    # Strip trailing carriage returns (clipboard paste from Windows/web can include \r)
+    local raw_value="${!var_name}"
+    raw_value="${raw_value%$'\r'}"
+    printf -v "$var_name" '%s' "$raw_value"
 
     # Show masked preview so the user knows something was captured
     local value="${!var_name}"
@@ -705,13 +758,20 @@ login_ghcr() {
     step_header "Authenticate Registry"
 
     spinner_start "Logging into GitHub Container Registry..."
-    if echo "$GIT_TOKEN" | docker login ghcr.io -u "token" --password-stdin >/dev/null 2>&1; then
+    # Use timeout to prevent hanging on credential helpers or network issues
+    if with_timeout 30 bash -c 'echo "$1" | docker login ghcr.io -u "token" --password-stdin >/dev/null 2>&1' _ "$GIT_TOKEN"; then
         spinner_stop
         ok "Logged into ghcr.io"
     else
+        local rc=$?
         spinner_stop
-        warn "ghcr.io login failed — images may not pull if private."
-        echo -e "  ${DIM}Fix: echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin${NC}"
+        if [ "$rc" -eq 124 ]; then
+            warn "ghcr.io login timed out (30s) — continuing anyway."
+            echo -e "  ${DIM}Docker credential helper may be slow. Images will still pull if public.${NC}"
+        else
+            warn "ghcr.io login failed — images may not pull if private."
+            echo -e "  ${DIM}Fix: echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin${NC}"
+        fi
     fi
 }
 
@@ -722,9 +782,9 @@ login_ghcr() {
 start_stack() {
     step_header "Pull & Start Services"
 
-    # Pull images with spinner
+    # Pull images with spinner (5 min timeout — large images on slow networks)
     spinner_start "Pulling Docker images (this may take a few minutes on first run)..."
-    if docker compose pull >/dev/null 2>&1; then
+    if with_timeout 300 docker compose pull >/dev/null 2>&1; then
         spinner_stop
         ok "Docker images pulled"
     else
@@ -742,9 +802,9 @@ start_stack() {
         exit 1
     fi
 
-    # Start services with spinner
+    # Start services with spinner (2 min timeout)
     spinner_start "Starting PostgreSQL, Indexer, MCP Server..."
-    if docker compose up -d >/dev/null 2>&1; then
+    if with_timeout 120 docker compose up -d >/dev/null 2>&1; then
         spinner_stop
         ok "Services started"
     else
