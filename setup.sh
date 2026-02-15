@@ -290,26 +290,45 @@ prompt_user() {
 }
 
 # Silent input for secrets (API keys, tokens) — hides typed/pasted text,
-# shows a masked preview after entry. Avoids the terminal flood caused by
-# pasting 1000+ character Bedrock short-term keys.
+# shows a masked preview after entry.
+#
+# KEY FIX: macOS has a MAX_CANON kernel limit (~1024 bytes) for terminal
+# line input in canonical mode. Bedrock short-term API keys are ~1044 chars
+# which EXCEEDS this limit, causing `read -rs` to hang indefinitely.
+# Solution: disable canonical mode with `stty -icanon` before reading,
+# then restore afterwards. This lets the kernel pass chars through without
+# a line-buffer limit while bash's `read` still collects until newline.
 prompt_secret() {
     local prompt_text="$1"
     local var_name="$2"
     local hint="${3:-}"   # e.g. "ABSK..." or "ghp_..."
+    local tty_fd saved_stty
 
     if [ -t 0 ]; then
-        printf "%b" "$prompt_text"
-        read -rs "$var_name"
-        echo ""  # newline after silent read
+        tty_fd="/dev/stdin"
     elif [ -e /dev/tty ]; then
-        printf "%b" "$prompt_text" > /dev/tty
-        read -rs "$var_name" < /dev/tty
-        echo "" > /dev/tty
+        tty_fd="/dev/tty"
     else
         echo ""
         fail "Cannot read input — no terminal available."
         exit 1
     fi
+
+    # Save terminal state and switch to non-canonical, no-echo mode
+    # This bypasses the macOS MAX_CANON 1024-byte line buffer limit
+    saved_stty=$(stty -g < "$tty_fd" 2>/dev/null) || true
+    stty -echo -icanon < "$tty_fd" 2>/dev/null || true
+
+    printf "%b" "$prompt_text" > "$tty_fd"
+    IFS= read -r "$var_name" < "$tty_fd"
+
+    # Restore terminal state
+    if [ -n "$saved_stty" ]; then
+        stty "$saved_stty" < "$tty_fd" 2>/dev/null || true
+    else
+        stty echo icanon < "$tty_fd" 2>/dev/null || true
+    fi
+    echo "" > "$tty_fd"  # newline after silent read
 
     # Strip trailing carriage returns (clipboard paste from Windows/web can include \r)
     local raw_value="${!var_name}"
