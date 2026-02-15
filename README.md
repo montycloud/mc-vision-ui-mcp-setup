@@ -11,8 +11,9 @@ You'll need **two things** ready (ask Nitheish if you don't have them):
 1. **GitHub Personal Access Token** — so Docker can pull our private container images and the server can clone component repos.
    Create one at [github.com/settings/tokens](https://github.com/settings/tokens) with `repo` and `read:packages` scopes.
 
-2. **OpenAI API Key** — the server uses this to generate embeddings for semantic search.
-   Get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+2. **One of these** (for embedding generation):
+   - **AWS Bedrock API Key** (recommended for MontyCloud team) — generate at AWS Console → Amazon Bedrock → API keys
+   - **OpenAI API Key** — get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
 
 ---
 
@@ -40,7 +41,7 @@ The script will automatically check your system, guide you through configuration
 
 1. Checks your system — Docker, disk space, RAM, available ports
 2. Downloads setup files to `~/vision-ui-mcp/`
-3. Asks for your GitHub token and OpenAI API key
+3. Asks for your GitHub token and embedding provider key (Bedrock or OpenAI)
 4. Authenticates with GitHub Container Registry
 5. Pulls and starts the Docker containers
 6. Waits for the MCP server to be healthy (3–5 minutes on first run)
@@ -132,7 +133,7 @@ It covers every step from scratch — installing git, Docker, configuring enviro
 git clone https://github.com/montycloud/mc-vision-ui-mcp-setup.git ~/vision-ui-mcp
 cd ~/vision-ui-mcp
 cp .env.example .env
-# Edit .env — fill in GIT_TOKEN and OPENAI_API_KEY
+# Edit .env — fill in GIT_TOKEN and your embedding key (OPENAI_API_KEY or AWS_BEARER_TOKEN_BEDROCK)
 echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 docker compose up -d
 # Wait 3-5 minutes, then verify:
@@ -277,9 +278,9 @@ echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password
 
 Then retry: `docker compose pull`
 
-### OpenAI rate limiting on first startup
+### Embedding rate limiting on first startup
 
-The initial embedding generation sends many requests to OpenAI. If you see rate limit errors in the logs, wait a minute — the server retries automatically. This only happens once during initial indexing.
+The initial embedding generation sends many API requests. If you see rate limit errors in the logs, wait a minute — the server retries automatically. This only happens once during initial indexing.
 
 ### "no configuration file provided: not found"
 

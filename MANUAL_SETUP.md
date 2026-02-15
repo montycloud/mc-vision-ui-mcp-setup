@@ -176,11 +176,20 @@ nano .env
 # Or if you have VS Code: code .env
 ```
 
-Fill in these two **required** values:
+Fill in these **required** values:
 
 ```
 GIT_TOKEN=ghp_xxxxxxxxxxxxxx
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxx
+
+# Choose ONE embedding provider:
+# Option A: AWS Bedrock (recommended for MontyCloud team)
+EMBEDDING_PROVIDER=bedrock
+AWS_BEARER_TOKEN_BEDROCK=ABSK...
+AWS_DEFAULT_REGION=us-east-1
+
+# Option B: OpenAI
+# EMBEDDING_PROVIDER=openai
+# OPENAI_API_KEY=sk-xxxxxxxxxxxxxx
 ```
 
 **Where to get these:**
@@ -193,11 +202,17 @@ OPENAI_API_KEY=sk-xxxxxxxxxxxxxx
    - Click "Generate token" and copy it
    - If you don't have access to the montycloud org repos, ask Nitheish
 
-2. **OpenAI API Key (OPENAI_API_KEY)**
-   - Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-   - Click "Create new secret key"
-   - Copy the key
-   - If your team uses a shared key, ask Nitheish
+2. **Embedding Provider Key** — choose one:
+   - **AWS Bedrock API Key** (recommended)
+     - Log into the AWS Console (via myapps.microsoft.com → AWS)
+     - Go to Amazon Bedrock → API keys (left sidebar)
+     - Click "Generate long-term API key"
+     - Copy the key (starts with `ABSK...`)
+     - Set `EMBEDDING_PROVIDER=bedrock` and `AWS_BEARER_TOKEN_BEDROCK=your_key` in `.env`
+   - **OpenAI API Key**
+     - Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+     - Click "Create new secret key" and copy it
+     - Set `EMBEDDING_PROVIDER=openai` and `OPENAI_API_KEY=your_key` in `.env`
 
 Save the file and close the editor. If using `nano`, press `Ctrl+O` to save, then `Ctrl+X` to exit.
 
@@ -205,11 +220,11 @@ Save the file and close the editor. If using `nano`, press `Ctrl+O` to save, the
 
 **Verify:**
 ```bash
-# Check that your tokens are filled in (not the placeholder values)
+# Check that your token is filled in (not the placeholder value)
 grep "GIT_TOKEN=" .env
-grep "OPENAI_API_KEY=" .env
+grep "EMBEDDING_PROVIDER=" .env
 ```
-You should see your actual tokens, not `ghp_your_github_token` or `sk-your_openai_api_key`.
+You should see your actual token and chosen embedding provider.
 
 ---
 
@@ -285,7 +300,7 @@ You should see:
 The first startup takes **3-5 minutes**. During this time, the server is:
 1. Cloning the Vision UI and MontyCloud repos
 2. Extracting component metadata
-3. Generating vector embeddings via OpenAI
+3. Generating vector embeddings (via your configured provider)
 
 Watch the progress:
 ```bash
@@ -301,7 +316,7 @@ docker compose ps
 
 The `mcp-server` should show **healthy**.
 
-**If you see OpenAI rate limit errors** in the logs — don't worry. This happens during the initial embedding burst. The server retries automatically. Just wait a couple of minutes.
+**If you see rate limit errors** in the logs — don't worry. This happens during the initial embedding burst. The server retries automatically. Just wait a couple of minutes.
 
 ---
 
@@ -467,7 +482,7 @@ You're in the wrong directory. Always `cd ~/vision-ui-mcp` before running `docke
 docker compose logs mcp-server
 ```
 Check for:
-- Invalid OpenAI API key → update `OPENAI_API_KEY` in `.env`, then `docker compose down && docker compose up -d`
+- Invalid API key → check `OPENAI_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` in `.env`, then `docker compose down && docker compose up -d`
 - Indexer still running → wait for it to finish
 - Database connection error → check that postgres is healthy with `docker compose ps`
 

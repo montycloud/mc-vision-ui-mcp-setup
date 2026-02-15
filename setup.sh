@@ -442,8 +442,6 @@ configure_env() {
     echo ""
     echo -e "${BOLD}Configure your environment${NC}"
     echo ""
-    echo "  You need two keys. If you don't have them, ask Nitheish."
-    echo ""
     echo -e "  ${YELLOW}1. GitHub Personal Access Token${NC}"
     echo "     Needed to clone the Vision UI and MontyCloud repos."
     echo "     Create one at: https://github.com/settings/tokens"
@@ -454,20 +452,93 @@ configure_env() {
     [ -z "${GIT_TOKEN:-}" ] && die "GitHub token is required. Ask Nitheish if you don't have one."
 
     echo ""
-    echo -e "  ${YELLOW}2. OpenAI API Key${NC}"
-    echo "     Needed to generate embeddings for semantic search."
+    echo -e "  ${YELLOW}2. Embedding Provider${NC}"
+    echo "     Semantic search requires an embedding provider."
+    echo ""
+    echo "     Choose one:"
+    echo "       1) OpenAI  — needs an API key (https://platform.openai.com/api-keys)"
+    echo "       2) AWS Bedrock — needs an API key (recommended for MontyCloud team)"
+    echo ""
+
+    prompt_user "  Enter 1 or 2 [1]: " EMBEDDING_CHOICE
+    EMBEDDING_CHOICE="${EMBEDDING_CHOICE:-1}"
+
+    local escaped_git_token
+    escaped_git_token=$(sed_escape "$GIT_TOKEN")
+
+    if [[ "$EMBEDDING_CHOICE" == "2" ]]; then
+        configure_bedrock "$escaped_git_token"
+    else
+        configure_openai "$escaped_git_token"
+    fi
+}
+
+# ──────────────────────────────────────────────
+# Configure AWS Bedrock (embedding provider)
+# ──────────────────────────────────────────────
+
+configure_bedrock() {
+    local escaped_git_token="$1"
+
+    echo ""
+    echo -e "  ${BOLD}AWS Bedrock Setup${NC}"
+    echo ""
+    echo "     You need a Bedrock API key. To generate one:"
+    echo ""
+    echo "       1. Log into the AWS Console (via myapps.microsoft.com → AWS)"
+    echo "       2. Go to Amazon Bedrock → API keys (left sidebar)"
+    echo "       3. Click 'Generate long-term API key'"
+    echo "       4. Copy the key (starts with ABSK...)"
+    echo ""
+
+    prompt_user "  Bedrock API key (ABSK...): " BEDROCK_API_KEY
+    [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console → Amazon Bedrock → API keys."
+
+    echo ""
+    prompt_user "  AWS region for Bedrock [us-east-1]: " BEDROCK_REGION
+    BEDROCK_REGION="${BEDROCK_REGION:-us-east-1}"
+
+    # Write config to .env
+    local escaped_key escaped_region
+    escaped_key=$(sed_escape "$BEDROCK_API_KEY")
+    escaped_region=$(sed_escape "$BEDROCK_REGION")
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s|ghp_your_github_token|${escaped_git_token}|" .env
+        sed -i '' "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
+        sed -i '' "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
+        sed -i '' "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
+        sed -i '' "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
+    else
+        sed -i "s|ghp_your_github_token|${escaped_git_token}|" .env
+        sed -i "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
+        sed -i "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
+        sed -i "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
+        sed -i "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
+    fi
+
+    echo ""
+    ok "Configured for AWS Bedrock (region: ${BEDROCK_REGION})"
+}
+
+# ──────────────────────────────────────────────
+# Configure OpenAI (embedding provider)
+# ──────────────────────────────────────────────
+
+configure_openai() {
+    local escaped_git_token="$1"
+
+    echo ""
+    echo -e "  ${YELLOW}OpenAI API Key${NC}"
     echo "     Get one at: https://platform.openai.com/api-keys"
     echo ""
 
     prompt_user "  OpenAI API key (sk-...): " OPENAI_API_KEY
     [ -z "${OPENAI_API_KEY:-}" ] && die "OpenAI API key is required. Ask Nitheish if you don't have one."
 
-    # Escape special characters for safe sed substitution
-    local escaped_git_token escaped_api_key
-    escaped_git_token=$(sed_escape "$GIT_TOKEN")
+    local escaped_api_key
     escaped_api_key=$(sed_escape "$OPENAI_API_KEY")
 
-    # Write values to .env (macOS sed requires '' after -i, Linux doesn't)
     if [[ "$OSTYPE" == "darwin"* ]]; then
         sed -i '' "s|ghp_your_github_token|${escaped_git_token}|" .env
         sed -i '' "s|sk-your_openai_api_key|${escaped_api_key}|" .env
@@ -476,7 +547,7 @@ configure_env() {
         sed -i "s|sk-your_openai_api_key|${escaped_api_key}|" .env
     fi
 
-    ok "Environment configured"
+    ok "Configured for OpenAI"
 }
 
 # ──────────────────────────────────────────────
