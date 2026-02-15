@@ -593,25 +593,27 @@ download_files() {
 
 # Safely set KEY=VALUE in a .env file. Works for any value length (including
 # 1000+ char Bedrock short-term tokens) without sed line-length limits.
+# IMPORTANT: Uses ENVIRON[] instead of awk -v to avoid C-style backslash
+# escape interpretation that can hang/corrupt base64-encoded tokens.
 # Usage: env_set .env KEY VALUE
 env_set() {
     local file="$1" key="$2" value="$3"
+    local tmp="${file}.tmp.$$"
     if grep -q "^${key}=" "$file" 2>/dev/null; then
         # Key exists (uncommented) — replace the line
-        local tmp="${file}.tmp.$$"
-        awk -v k="$key" -v v="$value" 'BEGIN{FS=OFS="="} $1==k{print k"="v; next} {print}' "$file" > "$tmp"
+        _ENVSET_K="$key" _ENVSET_V="$value" \
+            awk 'BEGIN{k=ENVIRON["_ENVSET_K"]; v=ENVIRON["_ENVSET_V"]}
+                 {split($0,a,"="); if(a[1]==k){print k"="v}else{print}}' "$file" > "$tmp"
         mv "$tmp" "$file"
     elif grep -q "^# *${key}=" "$file" 2>/dev/null; then
         # Key exists (commented out) — uncomment and set
-        local tmp="${file}.tmp.$$"
-        awk -v k="$key" -v v="$value" '{
-            if ($0 ~ "^# *" k "=") { print k "=" v }
-            else { print }
-        }' "$file" > "$tmp"
+        _ENVSET_K="$key" _ENVSET_V="$value" \
+            awk 'BEGIN{k=ENVIRON["_ENVSET_K"]; v=ENVIRON["_ENVSET_V"]}
+                 {if($0 ~ "^# *"k"="){print k"="v}else{print}}' "$file" > "$tmp"
         mv "$tmp" "$file"
     else
         # Key doesn't exist — append
-        echo "${key}=${value}" >> "$file"
+        printf '%s=%s\n' "$key" "$value" >> "$file"
     fi
 }
 
