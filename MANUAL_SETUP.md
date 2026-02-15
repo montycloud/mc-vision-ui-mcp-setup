@@ -185,12 +185,10 @@ GIT_TOKEN=ghp_xxxxxxxxxxxxxx
 # Option A: AWS Bedrock (recommended for MontyCloud team)
 EMBEDDING_PROVIDER=bedrock
 AWS_DEFAULT_REGION=us-east-1
-#   A1 — Long-term API key (recommended, no expiry):
+#   A1 — Long-term API key (recommended, custom expiry):
 AWS_BEARER_TOKEN_BEDROCK=ABSK...
-#   A2 — Short-term session credentials (from SSO/STS, expires):
-# AWS_ACCESS_KEY_ID=ASIA...
-# AWS_SECRET_ACCESS_KEY=...
-# AWS_SESSION_TOKEN=...
+#   A2 — Short-term API key (up to 12 hours):
+# AWS_BEARER_TOKEN_BEDROCK=bedrock-api-key-...
 
 # Option B: OpenAI
 # EMBEDDING_PROVIDER=openai
@@ -208,17 +206,13 @@ AWS_BEARER_TOKEN_BEDROCK=ABSK...
    - If you don't have access to the montycloud org repos, contact your team lead
 
 2. **Embedding Provider Key** — choose one:
-   - **AWS Bedrock — Long-term API key** (recommended, simplest)
+   - **AWS Bedrock — Bearer Token API key** (recommended, simplest)
      - Log into the AWS Console (via myapps.microsoft.com → AWS)
      - Go to Amazon Bedrock → API keys (left sidebar)
-     - Click "Generate long-term API key"
-     - Copy the key (starts with `ABSK...`)
+     - Generate either a long-term API key (starts with `ABSK...`, custom expiry) or short-term API key (starts with `bedrock-api-key-...`, up to 12 hours)
+     - Copy the key
      - Set `EMBEDDING_PROVIDER=bedrock` and `AWS_BEARER_TOKEN_BEDROCK=your_key` in `.env`
-   - **AWS Bedrock — Short-term session credentials** (from SSO or STS)
-     - Run `aws sso login` then `aws configure export-credentials --format env`
-     - Copy `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` into `.env`
-     - Set `EMBEDDING_PROVIDER=bedrock` in `.env`
-     - Note: these expire — you'll need to refresh and restart when they do
+     - Both key types use the same environment variable and authentication method
    - **OpenAI API Key**
      - Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
      - Click "Create new secret key" and copy it
@@ -492,7 +486,7 @@ You're in the wrong directory. Always `cd ~/vision-ui-mcp` before running `docke
 docker compose logs mcp-server
 ```
 Check for:
-- Invalid API key → check `OPENAI_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` (or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` if using short-term credentials) in `.env`, then `docker compose down && docker compose up -d`
+- Invalid API key → check `OPENAI_API_KEY` or `AWS_BEARER_TOKEN_BEDROCK` in `.env`, then `docker compose down && docker compose up -d`
 - Indexer still running → wait for it to finish
 - Database connection error → check that postgres is healthy with `docker compose ps`
 

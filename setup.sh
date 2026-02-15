@@ -218,10 +218,13 @@ prompt_user() {
     local prompt_text="$1"
     local var_name="$2"
 
+    # Use printf (not read -p) so ANSI escape sequences render correctly
     if [ -t 0 ]; then
-        read -rp "$prompt_text" "$var_name"
+        printf "%b" "$prompt_text"
+        read -r "$var_name"
     elif [ -e /dev/tty ]; then
-        read -rp "$prompt_text" "$var_name" < /dev/tty
+        printf "%b" "$prompt_text" > /dev/tty
+        read -r "$var_name" < /dev/tty
     else
         echo ""
         fail "Cannot read input — no terminal available."
@@ -563,18 +566,20 @@ configure_bedrock() {
     echo ""
     echo -e "  ${CYAN}${BOLD}AWS Bedrock Setup${NC}"
     echo ""
-    echo -e "  ${DIM}Choose your credential type:${NC}"
+    echo -e "  ${DIM}Choose your API key type:${NC}"
     echo ""
-    echo -e "    ${GREEN}a${NC}  Long-term API key ${DIM}(recommended — no expiry)${NC}"
-    echo -e "       ${DIM}Generate at: AWS Console → Amazon Bedrock → API keys${NC}"
+    echo -e "    ${GREEN}a${NC}  Long-term API key ${DIM}(recommended — custom expiry, starts with ABSK...)${NC}"
+    echo -e "       ${DIM}Generate at: AWS Console → Amazon Bedrock → API keys → Long-term${NC}"
     echo ""
-    echo -e "    ${YELLOW}b${NC}  Short-term session ${DIM}(from SSO or STS — expires)${NC}"
-    echo -e "       ${DIM}Run: aws configure export-credentials --format env${NC}"
+    echo -e "    ${YELLOW}b${NC}  Short-term API key ${DIM}(up to 12 hours, starts with bedrock-api-key-...)${NC}"
+    echo -e "       ${DIM}Generate at: AWS Console → Amazon Bedrock → API keys → Short-term${NC}"
+    echo ""
+    echo -e "  ${DIM}Both are single bearer tokens — just different expiration periods.${NC}"
     echo ""
 
-    local cred_choice=""
-    prompt_user "  Credential type [a/b]: " cred_choice
-    cred_choice="${cred_choice:-a}"
+    local key_type=""
+    prompt_user "  API key type [a/b]: " key_type
+    key_type="${key_type:-a}"
 
     echo ""
     prompt_user "  AWS region for Bedrock [us-east-1]: " BEDROCK_REGION
@@ -583,46 +588,43 @@ configure_bedrock() {
     local escaped_region
     escaped_region=$(sed_escape "$BEDROCK_REGION")
 
-    if [[ "$cred_choice" == "b" || "$cred_choice" == "B" ]]; then
-        # --- Short-term session credentials ---
+    if [[ "$key_type" == "b" || "$key_type" == "B" ]]; then
+        # --- Short-term API key (bearer token, ≤12h) ---
         echo ""
-        echo -e "  ${DIM}Paste your short-term credentials (from SSO or STS):${NC}"
+        echo -e "  ${DIM}To generate a short-term API key:${NC}"
+        echo -e "    ${DIM}1. Log into the AWS Console${NC}"
+        echo -e "    ${DIM}2. Go to Amazon Bedrock → API keys (left sidebar)${NC}"
+        echo -e "    ${DIM}3. Click 'Generate short-term API key'${NC}"
+        echo -e "    ${DIM}4. Copy the key (starts with bedrock-api-key-...)${NC}"
         echo ""
-        prompt_user "  AWS_ACCESS_KEY_ID (ASIA...): " AWS_AK
-        [ -z "${AWS_AK:-}" ] && die "AWS_ACCESS_KEY_ID is required."
-        prompt_user "  AWS_SECRET_ACCESS_KEY: " AWS_SK
-        [ -z "${AWS_SK:-}" ] && die "AWS_SECRET_ACCESS_KEY is required."
-        prompt_user "  AWS_SESSION_TOKEN: " AWS_ST
-        [ -z "${AWS_ST:-}" ] && die "AWS_SESSION_TOKEN is required for short-term credentials."
 
-        local escaped_ak escaped_sk escaped_st
-        escaped_ak=$(sed_escape "$AWS_AK")
-        escaped_sk=$(sed_escape "$AWS_SK")
-        escaped_st=$(sed_escape "$AWS_ST")
+        prompt_user "  Bedrock short-term API key: " BEDROCK_API_KEY
+        [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console → Amazon Bedrock → API keys."
+
+        local escaped_key
+        escaped_key=$(sed_escape "$BEDROCK_API_KEY")
 
         if [ "$OS" = "macos" ]; then
             sed -i '' "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
             sed -i '' "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
             sed -i '' "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
-            sed -i '' "s|# AWS_ACCESS_KEY_ID=ASIA...|AWS_ACCESS_KEY_ID=${escaped_ak}|" .env
-            sed -i '' "s|# AWS_SECRET_ACCESS_KEY=...|AWS_SECRET_ACCESS_KEY=${escaped_sk}|" .env
-            sed -i '' "s|# AWS_SESSION_TOKEN=...|AWS_SESSION_TOKEN=${escaped_st}|" .env
+            sed -i '' "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
             sed -i '' "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
         else
             sed -i "s|GIT_TOKEN=ghp_your_github_token|GIT_TOKEN=${escaped_git_token}|" .env
             sed -i "s|EMBEDDING_PROVIDER=openai|EMBEDDING_PROVIDER=bedrock|" .env
             sed -i "s|OPENAI_API_KEY=sk-your_openai_api_key|# OPENAI_API_KEY= (not needed for Bedrock)|" .env
-            sed -i "s|# AWS_ACCESS_KEY_ID=ASIA...|AWS_ACCESS_KEY_ID=${escaped_ak}|" .env
-            sed -i "s|# AWS_SECRET_ACCESS_KEY=...|AWS_SECRET_ACCESS_KEY=${escaped_sk}|" .env
-            sed -i "s|# AWS_SESSION_TOKEN=...|AWS_SESSION_TOKEN=${escaped_st}|" .env
+            sed -i "s|# AWS_BEARER_TOKEN_BEDROCK=ABSK...|AWS_BEARER_TOKEN_BEDROCK=${escaped_key}|" .env
             sed -i "s|# AWS_DEFAULT_REGION=us-east-1|AWS_DEFAULT_REGION=${escaped_region}|" .env
         fi
 
         echo ""
-        warn "Short-term credentials expire. When they do, update .env and restart:"
-        echo -e "       ${DIM}cd ~/vision-ui-mcp && docker compose restart mcp-server${NC}"
+        warn "Short-term API keys expire within 12 hours. When it expires:"
+        echo -e "       ${DIM}1. Generate a new key in the AWS Console${NC}"
+        echo -e "       ${DIM}2. Update AWS_BEARER_TOKEN_BEDROCK in ~/vision-ui-mcp/.env${NC}"
+        echo -e "       ${DIM}3. Run: cd ~/vision-ui-mcp && docker compose restart mcp-server${NC}"
         echo ""
-        ok "Configured for AWS Bedrock (session credentials, region: ${BEDROCK_REGION})"
+        ok "Configured for AWS Bedrock (short-term API key, region: ${BEDROCK_REGION})"
     else
         # --- Long-term API key (default) ---
         echo ""

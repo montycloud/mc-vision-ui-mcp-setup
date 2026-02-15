@@ -51,12 +51,8 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-20}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
-      # Long-term Bedrock API key (preferred for setup simplicity)
+      # Bedrock API key — works for both long-term (ABSK...) and short-term (bedrock-api-key-...)
       AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
-      # Short-term session credentials (from SSO / STS — alternative to bearer token)
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       VISION_UI_TRANSPORT: http
       VISION_UI_HTTP_HOST: 0.0.0.0
       VISION_UI_HTTP_PORT: 8080
