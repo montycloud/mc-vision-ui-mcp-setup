@@ -24,6 +24,14 @@ MIN_RAM_GB=4
 # Total steps in the setup flow (for progress tracking)
 TOTAL_STEPS=7
 CURRENT_STEP=0
+SETUP_START_TIME=$(date +%s)
+STEP_NAMES=("" "System Requirements" "Download Setup Files" "Configure Environment" "Authenticate Registry" "Pull & Start Services" "Indexing & Health Check" "Setup Complete")
+PREV_STEP_NAME=""
+
+# Config state (populated during configure_env, used in summary)
+CFG_PROVIDER=""
+CFG_REGION=""
+CFG_KEY_TYPE=""
 
 # ──────────────────────────────────────────────
 # Colors & styling (disabled if not a terminal)
@@ -36,49 +44,158 @@ if [ -t 1 ]; then
     BLUE='\033[0;34m'
     CYAN='\033[0;36m'
     MAGENTA='\033[0;35m'
+    WHITE='\033[1;37m'
     BOLD='\033[1m'
     DIM='\033[2m'
+    ITALIC='\033[3m'
     NC='\033[0m'
     # Cursor control
     HIDE_CURSOR='\033[?25l'
     SHOW_CURSOR='\033[?25h'
     CLEAR_LINE='\033[2K'
+    MOVE_UP='\033[1A'
 else
-    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' MAGENTA='' BOLD='' DIM='' NC=''
-    HIDE_CURSOR='' SHOW_CURSOR='' CLEAR_LINE=''
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' MAGENTA='' WHITE='' BOLD='' DIM='' ITALIC='' NC=''
+    HIDE_CURSOR='' SHOW_CURSOR='' CLEAR_LINE='' MOVE_UP=''
 fi
 
-# Ensure cursor is restored on exit; show error location if set -e fires
+# Terminal capabilities
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
+[ "$TERM_WIDTH" -lt 60 ] && TERM_WIDTH=80
+[ "$TERM_WIDTH" -gt 120 ] && TERM_WIDTH=120
+TERM_COLORS=$(tput colors 2>/dev/null || echo 8)
+
+# Extended palette for 256-color terminals
+if [ -t 1 ] && [ "$TERM_COLORS" -ge 256 ]; then
+    ACCENT='\033[38;5;75m'       # Soft blue
+    SOFT_GREEN='\033[38;5;114m'  # Muted green
+    SOFT_YELLOW='\033[38;5;222m' # Muted yellow
+    SOFT_RED='\033[38;5;210m'    # Muted red
+    SHADOW='\033[38;5;242m'      # Mid gray
+    LIGHT='\033[38;5;252m'       # Light gray
+    BRIGHT_GREEN='\033[38;5;82m' # Vivid green
+    BRIGHT_CYAN='\033[38;5;87m'  # Vivid cyan
+else
+    ACCENT="$CYAN"
+    SOFT_GREEN="$GREEN"
+    SOFT_YELLOW="$YELLOW"
+    SOFT_RED="$RED"
+    SHADOW="$DIM"
+    LIGHT=""
+    BRIGHT_GREEN="$GREEN"
+    BRIGHT_CYAN="$CYAN"
+fi
+
+# Status glyphs
+CHECK_PASS="●"
+CHECK_FAIL="✗"
+CHECK_WARN="◑"
+ARROW_RIGHT="›"
+BULLET="▸"
+
+# ──────────────────────────────────────────────
+# Cleanup & error handling
+# ──────────────────────────────────────────────
+
 cleanup() {
     local exit_code=$?
     printf "${SHOW_CURSOR}"
-    # Kill any orphaned spinner
     if [ -n "${SPINNER_PID:-}" ] && kill -0 "$SPINNER_PID" 2>/dev/null; then
         kill "$SPINNER_PID" 2>/dev/null || true
         wait "$SPINNER_PID" 2>/dev/null || true
     fi
     if [ "$exit_code" -ne 0 ]; then
         echo ""
-        echo -e "  ${RED}✗ Setup failed (exit code ${exit_code})${NC}"
-        echo -e "  ${DIM}If the error is unclear, re-run with:  bash -x setup.sh${NC}"
+        echo -e "  ${RED}${BOLD}${CHECK_FAIL} Setup failed${NC} ${DIM}(exit code ${exit_code})${NC}"
+        echo -e "  ${SHADOW}  Re-run with:  bash -x setup.sh${NC}"
         echo ""
     fi
 }
 trap cleanup EXIT
-trap 'echo -e "\n  ${RED}✗ Error on line ${LINENO}:${NC} command exited with code $?"' ERR
+trap 'echo -e "\n  ${RED}${CHECK_FAIL} Error on line ${LINENO}:${NC} command exited with code $?"' ERR
 
-info()  { echo -e "  ${BLUE}ℹ${NC}  $1"; }
-ok()    { echo -e "  ${GREEN}✓${NC}  $1"; }
-warn()  { echo -e "  ${YELLOW}⚠${NC}  $1"; }
-fail()  { echo -e "  ${RED}✗${NC}  $1"; }
-die()   { echo -e "\n  ${RED}✗ ERROR:${NC} $1"; printf "${SHOW_CURSOR}"; exit 1; }
+# ──────────────────────────────────────────────
+# Logging helpers
+# ──────────────────────────────────────────────
+
+info()  { echo -e "  ${ACCENT}ℹ${NC}  $1"; }
+ok()    { echo -e "  ${GREEN}${CHECK_PASS}${NC}  $1"; }
+warn()  { echo -e "  ${YELLOW}${CHECK_WARN}${NC}  $1"; }
+fail()  { echo -e "  ${RED}${CHECK_FAIL}${NC}  $1"; }
+die()   { echo -e "\n  ${RED}${BOLD}${CHECK_FAIL} ERROR:${NC} $1"; printf "${SHOW_CURSOR}"; exit 1; }
+
+# ──────────────────────────────────────────────
+# Formatting helpers
+# ──────────────────────────────────────────────
+
+format_time() {
+    local secs=$1
+    printf "%d:%02d" $((secs / 60)) $((secs % 60))
+}
+
+mask_secret() {
+    local value="$1"
+    local prefix_len="${2:-8}"
+    local len=${#value}
+    if [ "$len" -le "$prefix_len" ]; then
+        echo "$value"
+    else
+        echo "${value:0:$prefix_len}••••••••"
+    fi
+}
+
+# Repeat a character N times
+repeat_char() {
+    local char="$1" count="$2"
+    local result=""
+    for ((i = 0; i < count; i++)); do result+="$char"; done
+    echo "$result"
+}
+
+# Draw a horizontal rule
+hr() {
+    local width=$((TERM_WIDTH - 4))
+    echo -e "  ${SHADOW}$(repeat_char '─' "$width")${NC}"
+}
+
+# ──────────────────────────────────────────────
+# Box drawing helpers
+# ──────────────────────────────────────────────
+
+box_top() {
+    local title="${1:-}"
+    local width=$((TERM_WIDTH - 6))
+    if [ -n "$title" ]; then
+        local title_len=${#title}
+        local pad=$((width - title_len - 3))
+        [ "$pad" -lt 2 ] && pad=2
+        echo -e "  ${SHADOW}┌─${NC} ${BOLD}${title}${NC} ${SHADOW}$(repeat_char '─' "$pad")┐${NC}"
+    else
+        echo -e "  ${SHADOW}┌$(repeat_char '─' "$((width))")┐${NC}"
+    fi
+}
+
+box_line() {
+    local content="$1"
+    local width=$((TERM_WIDTH - 6))
+    echo -e "  ${SHADOW}│${NC}  ${content}"
+}
+
+box_empty() {
+    echo -e "  ${SHADOW}│${NC}"
+}
+
+box_bottom() {
+    local width=$((TERM_WIDTH - 6))
+    echo -e "  ${SHADOW}└$(repeat_char '─' "$width")┘${NC}"
+}
 
 # ──────────────────────────────────────────────
 # Animation helpers
 # ──────────────────────────────────────────────
 
-# Braille spinner — smooth 8-frame animation
-SPINNER_FRAMES=('⣾' '⣽' '⣻' '⢿' '⡿' '⣟' '⣯' '⣷')
+# Dots spinner — modern 10-frame animation
+SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 SPINNER_PID=""
 
 spinner_start() {
@@ -87,9 +204,9 @@ spinner_start() {
     (
         local i=0
         while true; do
-            printf "\r  ${CYAN}${SPINNER_FRAMES[$((i % 8))]}${NC}  ${msg}" >&2
+            printf "\r  ${ACCENT}${SPINNER_FRAMES[$((i % 10))]}${NC}  ${msg}" >&2
             i=$((i + 1))
-            sleep 0.1
+            sleep 0.08
         done
     ) &
     SPINNER_PID=$!
@@ -120,27 +237,36 @@ run_with_spinner() {
         spinner_stop
         fail "$msg"
         if [ -n "$output" ]; then
-            echo -e "     ${DIM}${output}${NC}" | head -5
+            echo -e "     ${SHADOW}${output}${NC}" | head -5
         fi
         return 1
     fi
 }
 
-# Step header with progress indicator
+# Step header with progress indicator and section dividers
 step_header() {
     CURRENT_STEP=$((CURRENT_STEP + 1))
     local title="$1"
-    local bar=""
-    local filled=$((CURRENT_STEP * 30 / TOTAL_STEPS))
-    local empty=$((30 - filled))
 
-    # Build progress bar
-    for ((i = 0; i < filled; i++)); do bar+="█"; done
-    for ((i = 0; i < empty; i++)); do bar+="░"; done
+    # Section completion divider (for steps after the first)
+    if [ "$CURRENT_STEP" -gt 1 ] && [ -n "$PREV_STEP_NAME" ]; then
+        echo ""
+        local elapsed=$(( $(date +%s) - SETUP_START_TIME ))
+        echo -e "  ${SHADOW}──${NC} ${GREEN}${CHECK_PASS}${NC} ${SHADOW}${PREV_STEP_NAME}${NC} ${SHADOW}$(repeat_char '─' $((TERM_WIDTH - ${#PREV_STEP_NAME} - 12)))${NC}"
+    fi
+    PREV_STEP_NAME="$title"
+
+    # Progress bar
+    local bar_width=30
+    local filled=$((CURRENT_STEP * bar_width / TOTAL_STEPS))
+    local empty=$((bar_width - filled))
+    local bar=""
+    for ((i = 0; i < filled; i++)); do bar+="━"; done
+    for ((i = 0; i < empty; i++)); do bar+="╌"; done
 
     echo ""
-    echo -e "  ${DIM}Step ${CURRENT_STEP}/${TOTAL_STEPS}${NC}  ${BOLD}${title}${NC}"
-    echo -e "  ${GREEN}${bar}${NC}  ${DIM}${CURRENT_STEP}/${TOTAL_STEPS}${NC}"
+    echo -e "  ${ACCENT}${bar}${NC}  ${SHADOW}${CURRENT_STEP}/${TOTAL_STEPS}${NC}"
+    echo -e "  ${BOLD}${title}${NC}"
     echo ""
 }
 
@@ -187,10 +313,20 @@ countdown() {
     local secs=$1
     local msg="${2:-Starting in}"
     for ((i = secs; i > 0; i--)); do
-        printf "\r  ${DIM}${msg} ${i}s...${NC}"
+        printf "\r  ${SHADOW}${msg} ${i}s...${NC}"
         sleep 1
     done
     printf "\r${CLEAR_LINE}"
+}
+
+# Time-aware color (for health check progress)
+get_time_color() {
+    local elapsed=$1
+    if   [ "$elapsed" -lt 60  ]; then echo -ne "$GREEN"
+    elif [ "$elapsed" -lt 180 ]; then echo -ne "$CYAN"
+    elif [ "$elapsed" -lt 270 ]; then echo -ne "$YELLOW"
+    else echo -ne "$RED"
+    fi
 }
 
 # ──────────────────────────────────────────────
@@ -221,7 +357,7 @@ detect_platform() {
 
     case "$(uname -m 2>/dev/null || echo unknown)" in
         x86_64|amd64)    ARCH="x64";   CHIP="Intel/AMD x64" ;;
-        arm64|aarch64)   ARCH="arm64"; CHIP="ARM64 (Apple Silicon / Graviton)" ;;
+        arm64|aarch64)   ARCH="arm64"; CHIP="Apple Silicon / ARM64" ;;
         armv7l|armhf)    ARCH="armv7"; CHIP="ARM 32-bit" ;;
         *)               ARCH="unknown"; CHIP="Unknown" ;;
     esac
@@ -339,8 +475,8 @@ prompt_secret() {
     local value="${!var_name}"
     if [ -n "$value" ]; then
         local len=${#value}
-        local prefix="${value:0:8}"
-        echo -e "  ${DIM}  Received: ${prefix}$( [ "$len" -gt 8 ] && echo "••••••••" )${NC} ${DIM}(${len} chars)${NC}"
+        local preview=$(mask_secret "$value" 8)
+        echo -e "    ${SHADOW}${ARROW_RIGHT} ${preview}${NC} ${SHADOW}(${len} chars)${NC}"
     fi
 }
 
@@ -353,38 +489,45 @@ preflight_checks() {
 
     step_header "System Requirements"
 
-    info "Platform: ${OS} / ${CHIP}"
+    # Platform info in a compact line
+    echo -e "  ${SHADOW}${OS} ${BULLET} ${CHIP}${NC}"
     echo ""
 
     if [ "$OS" = "unknown" ]; then
-        fail "Unsupported operating system. This script supports macOS, Linux, and Windows (WSL2 / Git Bash)."
+        fail "Unsupported OS. Supports macOS, Linux, Windows (WSL2 / Git Bash)."
         errors=$((errors + 1))
     fi
 
     if [ "$ARCH" = "armv7" ]; then
-        fail "32-bit ARM is not supported. Docker images require 64-bit (x64 or arm64)."
+        fail "32-bit ARM not supported. Docker images require 64-bit."
         errors=$((errors + 1))
     fi
 
+    # Animated checklist — each item reveals with a brief pause
+    local col_width=36
+    local col=0  # 0 = left column, 1 = right column
+
+    # Helper: print a check result in 2-column grid
+    print_check() {
+        local icon="$1" label="$2" color="$3"
+        if [ "$col" -eq 0 ]; then
+            # Left column — print without newline, pad to col_width
+            printf "  ${color}${icon}${NC}  %-${col_width}s" "$label"
+            col=1
+        else
+            # Right column — print with newline
+            printf "${color}${icon}${NC}  %s\n" "$label"
+            col=0
+        fi
+        sleep 0.06
+    }
+
     # -- Git --
     if command -v git >/dev/null 2>&1; then
-        ok "git $(git --version | sed 's/git version //')"
+        local git_ver=$(git --version | sed 's/git version //')
+        print_check "$CHECK_PASS" "git ${git_ver}" "$GREEN"
     else
-        fail "git is not installed."
-        echo ""
-        case "$OS" in
-            macos)
-                echo "    Install:  xcode-select --install"
-                echo "    Or:       brew install git"
-                ;;
-            linux|wsl)
-                echo "    Install:  sudo apt install -y git"
-                ;;
-            windows-gitbash)
-                echo "    Install:  https://git-scm.com/download/win"
-                ;;
-        esac
-        echo ""
+        print_check "$CHECK_FAIL" "git (missing)" "$RED"
         errors=$((errors + 1))
     fi
 
@@ -393,61 +536,22 @@ preflight_checks() {
         local docker_ver
         docker_ver=$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo "0.0")
         if version_gte "$docker_ver" "$MIN_DOCKER_VERSION"; then
-            ok "Docker v${docker_ver}"
+            print_check "$CHECK_PASS" "Docker v${docker_ver}" "$GREEN"
         else
-            fail "Docker ${docker_ver} is too old (need >= ${MIN_DOCKER_VERSION})"
+            print_check "$CHECK_FAIL" "Docker ${docker_ver} (need >=${MIN_DOCKER_VERSION})" "$RED"
             errors=$((errors + 1))
         fi
     else
-        fail "Docker is not installed."
-        echo ""
-        case "$OS" in
-            macos)
-                echo "    Install Docker Desktop:"
-                echo "      https://docs.docker.com/desktop/install/mac-install/"
-                echo "    Or: brew install --cask docker"
-                ;;
-            linux)
-                echo "    Install: curl -fsSL https://get.docker.com | sh"
-                echo "    Then:    sudo usermod -aG docker \$USER && newgrp docker"
-                ;;
-            wsl)
-                echo "    Install Docker Desktop for Windows (integrates with WSL2):"
-                echo "      https://docs.docker.com/desktop/install/windows-install/"
-                ;;
-            windows-gitbash)
-                echo "    Install Docker Desktop for Windows:"
-                echo "      https://docs.docker.com/desktop/install/windows-install/"
-                ;;
-        esac
-        echo ""
+        print_check "$CHECK_FAIL" "Docker (missing)" "$RED"
         errors=$((errors + 1))
     fi
 
     # -- Docker running --
     if command -v docker >/dev/null 2>&1; then
         if docker info >/dev/null 2>&1; then
-            ok "Docker daemon is running"
+            print_check "$CHECK_PASS" "Docker daemon running" "$GREEN"
         else
-            fail "Docker is installed but not running."
-            echo ""
-            case "$OS" in
-                macos)
-                    echo "    Open Docker Desktop from Applications and wait for the whale icon."
-                    ;;
-                linux)
-                    echo "    Start: sudo systemctl start docker"
-                    echo "    Permission fix: sudo usermod -aG docker \$USER && newgrp docker"
-                    ;;
-                wsl)
-                    echo "    Open Docker Desktop on Windows."
-                    echo "    Enable WSL2: Settings → Resources → WSL Integration"
-                    ;;
-                windows-gitbash)
-                    echo "    Open Docker Desktop and wait for it to start."
-                    ;;
-            esac
-            echo ""
+            print_check "$CHECK_FAIL" "Docker daemon stopped" "$RED"
             errors=$((errors + 1))
         fi
     fi
@@ -458,18 +562,16 @@ preflight_checks() {
             local compose_ver
             compose_ver=$(docker compose version --short 2>/dev/null | sed 's/^v//')
             if version_gte "$compose_ver" "$MIN_COMPOSE_VERSION"; then
-                ok "Docker Compose v${compose_ver}"
+                print_check "$CHECK_PASS" "Compose v${compose_ver}" "$GREEN"
             else
-                fail "Docker Compose ${compose_ver} is too old (need >= ${MIN_COMPOSE_VERSION})"
+                print_check "$CHECK_FAIL" "Compose ${compose_ver} (need >=${MIN_COMPOSE_VERSION})" "$RED"
                 errors=$((errors + 1))
             fi
         elif command -v docker-compose >/dev/null 2>&1; then
-            fail "Found legacy docker-compose v1 — need v2+."
-            echo "    Update Docker Desktop or install the Compose plugin."
+            print_check "$CHECK_FAIL" "Compose v1 (need v2+)" "$RED"
             errors=$((errors + 1))
         else
-            fail "Docker Compose not found."
-            echo "    Update Docker Desktop — Compose v2 is included."
+            print_check "$CHECK_FAIL" "Compose (missing)" "$RED"
             errors=$((errors + 1))
         fi
     fi
@@ -483,9 +585,9 @@ preflight_checks() {
             available_gb=$(df -BG "$HOME" 2>/dev/null | awk 'NR==2 {gsub(/G/,"",$4); print $4}' || echo "0")
         fi
         if [ "$available_gb" -ge "$MIN_DISK_GB" ] 2>/dev/null; then
-            ok "Disk: ${available_gb}GB free"
+            print_check "$CHECK_PASS" "Disk: ${available_gb}GB free" "$GREEN"
         elif [ "$available_gb" -gt 0 ] 2>/dev/null; then
-            warn "Low disk: ${available_gb}GB free (recommend ${MIN_DISK_GB}GB)"
+            print_check "$CHECK_WARN" "Disk: ${available_gb}GB (rec ${MIN_DISK_GB}GB)" "$YELLOW"
         fi
     fi
 
@@ -497,45 +599,62 @@ preflight_checks() {
         total_ram_gb=$(awk '/MemTotal/ {printf "%d", $2/1048576}' /proc/meminfo 2>/dev/null || echo "0")
     fi
     if [ "$total_ram_gb" -ge "$MIN_RAM_GB" ] 2>/dev/null; then
-        ok "RAM: ${total_ram_gb}GB"
+        print_check "$CHECK_PASS" "RAM: ${total_ram_gb}GB" "$GREEN"
     elif [ "$total_ram_gb" -gt 0 ] 2>/dev/null; then
-        warn "Low RAM: ${total_ram_gb}GB (recommend ${MIN_RAM_GB}GB)"
+        print_check "$CHECK_WARN" "RAM: ${total_ram_gb}GB (rec ${MIN_RAM_GB}GB)" "$YELLOW"
     fi
 
     # -- Port 8080 --
     if command -v lsof >/dev/null 2>&1; then
         if lsof -i :8080 >/dev/null 2>&1; then
-            warn "Port 8080 in use — set MCP_PORT=9090 in .env after setup"
+            print_check "$CHECK_WARN" "Port 8080 in use" "$YELLOW"
         else
-            ok "Port 8080 is available"
+            print_check "$CHECK_PASS" "Port 8080 available" "$GREEN"
         fi
     elif command -v ss >/dev/null 2>&1; then
         if ss -tlnp 2>/dev/null | grep -q ':8080 '; then
-            warn "Port 8080 in use — set MCP_PORT=9090 in .env after setup"
+            print_check "$CHECK_WARN" "Port 8080 in use" "$YELLOW"
         else
-            ok "Port 8080 is available"
+            print_check "$CHECK_PASS" "Port 8080 available" "$GREEN"
         fi
     fi
 
     # -- curl or wget --
     if command -v curl >/dev/null 2>&1; then
-        ok "curl found"
+        print_check "$CHECK_PASS" "curl" "$GREEN"
     elif command -v wget >/dev/null 2>&1; then
-        ok "wget found"
+        print_check "$CHECK_PASS" "wget" "$GREEN"
     else
-        warn "Neither curl nor wget found."
+        print_check "$CHECK_WARN" "curl/wget (missing)" "$YELLOW"
     fi
+
+    # Flush incomplete row
+    [ "$col" -eq 1 ] && echo ""
 
     echo ""
 
     if [ "$errors" -gt 0 ]; then
-        echo -e "  ${RED}${BOLD}✗ ${errors} issue(s) found. Fix them and re-run this script.${NC}"
+        echo -e "  ${RED}${BOLD}${CHECK_FAIL} ${errors} issue(s) found. Fix them and re-run this script.${NC}"
+        echo ""
+
+        # Show install hints for failures
+        if ! command -v git >/dev/null 2>&1; then
+            echo -e "  ${SHADOW}  git:    ${NC}"
+            case "$OS" in
+                macos) echo -e "  ${SHADOW}    xcode-select --install  or  brew install git${NC}" ;;
+                linux|wsl) echo -e "  ${SHADOW}    sudo apt install -y git${NC}" ;;
+                *) echo -e "  ${SHADOW}    https://git-scm.com${NC}" ;;
+            esac
+        fi
+        if ! command -v docker >/dev/null 2>&1; then
+            echo -e "  ${SHADOW}  Docker: https://docs.docker.com/get-docker/${NC}"
+        fi
         echo ""
         exit 1
     fi
 
-    echo -e "  ${GREEN}${BOLD}✓ All checks passed!${NC}"
-    sleep 0.5
+    echo -e "  ${GREEN}${BOLD}All checks passed${NC}"
+    sleep 0.3
 }
 
 # ──────────────────────────────────────────────
@@ -545,17 +664,18 @@ preflight_checks() {
 check_existing() {
     if [ -d "$INSTALL_DIR" ]; then
         echo ""
-        warn "Directory $INSTALL_DIR already exists."
+        warn "Directory ${DIM}$INSTALL_DIR${NC} ${YELLOW}already exists.${NC}"
         echo ""
-        echo -e "  ${BOLD}What would you like to do?${NC}"
-        echo ""
-        echo -e "    ${GREEN}1${NC}  Update     — Pull latest images and restart"
-        echo -e "    ${YELLOW}2${NC}  Reinstall  — Remove everything and start fresh"
-        echo -e "    ${DIM}3${NC}  Quit       — Exit without changes"
+
+        box_top "Choose Action"
+        box_line "${GREEN}1${NC}  Update     ${SHADOW}— Pull latest images and restart${NC}"
+        box_line "${YELLOW}2${NC}  Reinstall  ${SHADOW}— Remove everything and start fresh${NC}"
+        box_line "${SHADOW}3${NC}  Quit       ${SHADOW}— Exit without changes${NC}"
+        box_bottom
         echo ""
 
         local choice=""
-        prompt_user "  Choose [1/2/3]: " choice
+        prompt_user "  ${BOLD}Choose [1/2/3]:${NC} " choice
 
         case "$choice" in
             1)
@@ -603,7 +723,7 @@ download_files() {
     if git clone --depth 1 "$REPO" "$INSTALL_DIR" >/dev/null 2>&1; then
         rm -rf "$INSTALL_DIR/.git"
         spinner_stop
-        ok "Setup files downloaded to ${DIM}${INSTALL_DIR}${NC}"
+        ok "Setup files downloaded to ${SHADOW}${INSTALL_DIR}${NC}"
     else
         spinner_stop
         die "Failed to clone repository. Check your network connection and try again.\n  URL: $REPO"
@@ -646,25 +766,29 @@ configure_env() {
 
     step_header "Configure Environment"
 
-    echo -e "  ${YELLOW}${BOLD}1. GitHub Personal Access Token${NC}"
-    echo -e "  ${DIM}Needed to clone the Vision UI and MontyCloud repos.${NC}"
-    echo -e "  ${DIM}Create one at: https://github.com/settings/tokens${NC}"
-    echo -e "  ${DIM}Required scopes: repo (read access), read:packages${NC}"
+    # ── GitHub Token ──
+    box_top "GitHub Personal Access Token"
+    box_line "${SHADOW}Create at: https://github.com/settings/tokens${NC}"
+    box_line "${SHADOW}Scopes:   repo (read), read:packages${NC}"
+    box_bottom
     echo ""
 
-    prompt_secret "  ${BOLD}GitHub token (ghp_...):${NC} " GIT_TOKEN "ghp_"
+    prompt_secret "  ${BOLD}Token:${NC} " GIT_TOKEN "ghp_"
     [ -z "${GIT_TOKEN:-}" ] && die "GitHub token is required. Create one at: https://github.com/settings/tokens (scopes: repo, read:packages)"
     ok "GitHub token saved"
 
     echo ""
-    echo -e "  ${YELLOW}${BOLD}2. Embedding Provider${NC}"
-    echo -e "  ${DIM}Semantic search requires an embedding provider.${NC}"
-    echo ""
-    echo -e "    ${GREEN}1${NC}  OpenAI   — needs an API key (https://platform.openai.com/api-keys)"
-    echo -e "    ${CYAN}2${NC}  Bedrock  — AWS API key ${DIM}(recommended for MontyCloud team)${NC}"
+
+    # ── Embedding Provider ──
+    box_top "Embedding Provider"
+    box_line "Semantic search requires an embedding provider."
+    box_empty
+    box_line "  ${GREEN}1${NC}  OpenAI   ${SHADOW}— API key from platform.openai.com${NC}"
+    box_line "  ${CYAN}2${NC}  Bedrock  ${SHADOW}— AWS API key (recommended for MontyCloud)${NC}"
+    box_bottom
     echo ""
 
-    prompt_user "  Enter 1 or 2 [1]: " EMBEDDING_CHOICE
+    prompt_user "  ${BOLD}Enter 1 or 2 [1]:${NC} " EMBEDDING_CHOICE
     EMBEDDING_CHOICE="${EMBEDDING_CHOICE:-1}"
 
     if [[ "$EMBEDDING_CHOICE" == "2" ]]; then
@@ -672,6 +796,9 @@ configure_env() {
     else
         configure_openai
     fi
+
+    # Show configuration summary
+    show_config_summary
 }
 
 # ──────────────────────────────────────────────
@@ -679,36 +806,32 @@ configure_env() {
 # ──────────────────────────────────────────────
 
 configure_bedrock() {
+    CFG_PROVIDER="bedrock"
     echo ""
-    echo -e "  ${CYAN}${BOLD}AWS Bedrock Setup${NC}"
-    echo ""
-    echo -e "  ${DIM}Choose your API key type:${NC}"
-    echo ""
-    echo -e "    ${GREEN}a${NC}  Long-term API key ${DIM}(recommended — custom expiry, starts with ABSK...)${NC}"
-    echo -e "       ${DIM}Generate at: AWS Console → Amazon Bedrock → API keys → Long-term${NC}"
-    echo ""
-    echo -e "    ${YELLOW}b${NC}  Short-term API key ${DIM}(up to 12 hours, starts with bedrock-api-key-...)${NC}"
-    echo -e "       ${DIM}Generate at: AWS Console → Amazon Bedrock → API keys → Short-term${NC}"
-    echo ""
-    echo -e "  ${DIM}Both are single bearer tokens — just different expiration periods.${NC}"
+
+    box_top "AWS Bedrock Setup"
+    box_line "Choose your API key type:"
+    box_empty
+    box_line "  ${GREEN}a${NC}  Long-term   ${SHADOW}— custom expiry, starts with ABSK...${NC}"
+    box_line "  ${YELLOW}b${NC}  Short-term  ${SHADOW}— up to 12 hours, starts with bedrock-api-key-...${NC}"
+    box_empty
+    box_line "${SHADOW}Both are single bearer tokens — just different expiration.${NC}"
+    box_bottom
     echo ""
 
     local key_type=""
-    prompt_user "  API key type [a/b]: " key_type
+    prompt_user "  ${BOLD}API key type [a/b]:${NC} " key_type
     key_type="${key_type:-a}"
 
     echo ""
-    prompt_user "  AWS region for Bedrock [us-east-1]: " BEDROCK_REGION
+    prompt_user "  ${BOLD}AWS region [us-east-1]:${NC} " BEDROCK_REGION
     BEDROCK_REGION="${BEDROCK_REGION:-us-east-1}"
+    CFG_REGION="$BEDROCK_REGION"
 
     if [[ "$key_type" == "b" || "$key_type" == "B" ]]; then
-        # --- Short-term API key (bearer token, ≤12h) ---
+        CFG_KEY_TYPE="short-term"
         echo ""
-        echo -e "  ${DIM}To generate a short-term API key:${NC}"
-        echo -e "    ${DIM}1. Log into the AWS Console${NC}"
-        echo -e "    ${DIM}2. Go to Amazon Bedrock → API keys (left sidebar)${NC}"
-        echo -e "    ${DIM}3. Click 'Generate short-term API key'${NC}"
-        echo -e "    ${DIM}4. Copy the key (starts with bedrock-api-key-...)${NC}"
+        echo -e "  ${SHADOW}Generate at: AWS Console ${ARROW_RIGHT} Amazon Bedrock ${ARROW_RIGHT} API keys ${ARROW_RIGHT} Short-term${NC}"
         echo ""
 
         prompt_secret "  ${BOLD}Bedrock short-term API key:${NC} " BEDROCK_API_KEY
@@ -721,20 +844,16 @@ configure_bedrock() {
         env_set .env AWS_DEFAULT_REGION "$BEDROCK_REGION"
 
         echo ""
-        warn "Short-term API keys expire within 12 hours. When it expires:"
-        echo -e "       ${DIM}1. Generate a new key in the AWS Console${NC}"
-        echo -e "       ${DIM}2. Update AWS_BEARER_TOKEN_BEDROCK in ~/vision-ui-mcp/.env${NC}"
-        echo -e "       ${DIM}3. Run: cd ~/vision-ui-mcp && docker compose restart mcp-server${NC}"
+        echo -e "  ${YELLOW}${CHECK_WARN}${NC}  ${SHADOW}Short-term keys expire within 12 hours. When expired:${NC}"
+        echo -e "     ${SHADOW}1. Generate a new key in AWS Console${NC}"
+        echo -e "     ${SHADOW}2. Update AWS_BEARER_TOKEN_BEDROCK in ~/vision-ui-mcp/.env${NC}"
+        echo -e "     ${SHADOW}3. Run: cd ~/vision-ui-mcp && docker compose restart mcp-server${NC}"
         echo ""
-        ok "Configured for AWS Bedrock (short-term API key, region: ${BEDROCK_REGION})"
+        ok "Configured for AWS Bedrock ${SHADOW}(short-term, ${BEDROCK_REGION})${NC}"
     else
-        # --- Long-term API key (default) ---
+        CFG_KEY_TYPE="long-term"
         echo ""
-        echo -e "  ${DIM}To generate a long-term API key:${NC}"
-        echo -e "    ${DIM}1. Log into the AWS Console (via myapps.microsoft.com → AWS)${NC}"
-        echo -e "    ${DIM}2. Go to Amazon Bedrock → API keys (left sidebar)${NC}"
-        echo -e "    ${DIM}3. Click 'Generate long-term API key'${NC}"
-        echo -e "    ${DIM}4. Copy the key (starts with ABSK...)${NC}"
+        echo -e "  ${SHADOW}Generate at: AWS Console ${ARROW_RIGHT} Amazon Bedrock ${ARROW_RIGHT} API keys ${ARROW_RIGHT} Long-term${NC}"
         echo ""
 
         prompt_secret "  ${BOLD}Bedrock API key (ABSK...):${NC} " BEDROCK_API_KEY
@@ -747,7 +866,7 @@ configure_bedrock() {
         env_set .env AWS_DEFAULT_REGION "$BEDROCK_REGION"
 
         echo ""
-        ok "Configured for AWS Bedrock (long-term API key, region: ${BEDROCK_REGION})"
+        ok "Configured for AWS Bedrock ${SHADOW}(long-term, ${BEDROCK_REGION})${NC}"
     fi
 }
 
@@ -756,12 +875,17 @@ configure_bedrock() {
 # ──────────────────────────────────────────────
 
 configure_openai() {
-    echo ""
-    echo -e "  ${GREEN}${BOLD}OpenAI API Key${NC}"
-    echo -e "  ${DIM}Get one at: https://platform.openai.com/api-keys${NC}"
+    CFG_PROVIDER="openai"
+    CFG_KEY_TYPE=""
+    CFG_REGION=""
     echo ""
 
-    prompt_secret "  ${BOLD}OpenAI API key (sk-...):${NC} " OPENAI_API_KEY
+    box_top "OpenAI API Key"
+    box_line "${SHADOW}Get one at: https://platform.openai.com/api-keys${NC}"
+    box_bottom
+    echo ""
+
+    prompt_secret "  ${BOLD}API key (sk-...):${NC} " OPENAI_API_KEY
     [ -z "${OPENAI_API_KEY:-}" ] && die "OpenAI API key is required. Get one at: https://platform.openai.com/api-keys"
 
     # Write .env
@@ -769,6 +893,40 @@ configure_openai() {
     env_set .env OPENAI_API_KEY "$OPENAI_API_KEY"
 
     ok "Configured for OpenAI"
+}
+
+# ──────────────────────────────────────────────
+# Configuration summary
+# ──────────────────────────────────────────────
+
+show_config_summary() {
+    echo ""
+
+    local git_preview=$(mask_secret "$GIT_TOKEN" 8)
+    local git_len=${#GIT_TOKEN}
+
+    box_top "Configuration Summary"
+    box_empty
+
+    if [ "$CFG_PROVIDER" = "bedrock" ]; then
+        local key_preview=$(mask_secret "$BEDROCK_API_KEY" 12)
+        local key_len=${#BEDROCK_API_KEY}
+        box_line "Provider   ${CYAN}AWS Bedrock${NC} ${SHADOW}(${CFG_KEY_TYPE} key)${NC}"
+        box_line "Region     ${CYAN}${CFG_REGION}${NC}"
+        box_line "API Key    ${SHADOW}${key_preview}  (${key_len} chars)${NC}"
+    else
+        local key_preview=$(mask_secret "$OPENAI_API_KEY" 8)
+        local key_len=${#OPENAI_API_KEY}
+        box_line "Provider   ${GREEN}OpenAI${NC}"
+        box_line "API Key    ${SHADOW}${key_preview}  (${key_len} chars)${NC}"
+    fi
+
+    box_line "GitHub     ${SHADOW}${git_preview}  (${git_len} chars)${NC}"
+    box_empty
+    box_bottom
+    echo ""
+
+    sleep 0.5
 }
 
 # ──────────────────────────────────────────────
@@ -788,10 +946,10 @@ login_ghcr() {
         spinner_stop
         if [ "$rc" -eq 124 ]; then
             warn "ghcr.io login timed out (30s) — continuing anyway."
-            echo -e "  ${DIM}Docker credential helper may be slow. Images will still pull if public.${NC}"
+            echo -e "    ${SHADOW}Docker credential helper may be slow. Images will still pull if public.${NC}"
         else
             warn "ghcr.io login failed — images may not pull if private."
-            echo -e "  ${DIM}Fix: echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin${NC}"
+            echo -e "    ${SHADOW}Fix: echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin${NC}"
         fi
     fi
 }
@@ -804,7 +962,7 @@ start_stack() {
     step_header "Pull & Start Services"
 
     # Pull images with spinner (5 min timeout — large images on slow networks)
-    spinner_start "Pulling Docker images (this may take a few minutes on first run)..."
+    spinner_start "Pulling Docker images ${SHADOW}(this may take a few minutes on first run)${NC}"
     if with_timeout 300 docker compose pull >/dev/null 2>&1; then
         spinner_stop
         ok "Docker images pulled"
@@ -813,13 +971,14 @@ start_stack() {
         echo ""
         fail "Failed to pull Docker images."
         echo ""
-        echo -e "  ${DIM}Common causes:${NC}"
-        echo -e "    ${DIM}- ghcr.io auth failed${NC}"
-        echo -e "    ${DIM}- Network/firewall blocking ghcr.io${NC}"
-        echo -e "    ${DIM}- GitHub token missing 'read:packages' scope${NC}"
-        echo ""
-        echo -e "  ${DIM}Your files are saved in $INSTALL_DIR — fix the issue and run:${NC}"
-        echo -e "    ${DIM}cd $INSTALL_DIR && docker compose up -d${NC}"
+        box_top "Troubleshooting"
+        box_line "${SHADOW}${BULLET} ghcr.io authentication failed${NC}"
+        box_line "${SHADOW}${BULLET} Network/firewall blocking ghcr.io${NC}"
+        box_line "${SHADOW}${BULLET} GitHub token missing 'read:packages' scope${NC}"
+        box_empty
+        box_line "${SHADOW}Files saved in $INSTALL_DIR — fix the issue and run:${NC}"
+        box_line "cd $INSTALL_DIR && docker compose up -d"
+        box_bottom
         exit 1
     fi
 
@@ -833,90 +992,168 @@ start_stack() {
         echo ""
         fail "Failed to start services."
         echo ""
-        echo -e "  ${DIM}Check logs: cd $INSTALL_DIR && docker compose logs${NC}"
-        echo ""
-        echo -e "  ${DIM}Common issues:${NC}"
-        echo -e "    ${DIM}- Port 8080 in use → Set MCP_PORT=9090 in .env${NC}"
-        echo -e "    ${DIM}- Not enough memory → Increase Docker resources${NC}"
+        box_top "Troubleshooting"
+        box_line "${SHADOW}${BULLET} Port 8080 in use → Set MCP_PORT=9090 in .env${NC}"
+        box_line "${SHADOW}${BULLET} Not enough memory → Increase Docker resources${NC}"
+        box_line "${SHADOW}Check logs: cd $INSTALL_DIR && docker compose logs${NC}"
+        box_bottom
         exit 1
     fi
 }
 
 # ──────────────────────────────────────────────
-# Wait for health (with animated progress)
+# Wait for health — Live container dashboard
 # ──────────────────────────────────────────────
 
 wait_for_health() {
     step_header "Indexing & Health Check"
 
-    echo -e "  ${DIM}First startup takes 3-5 minutes — cloning repos, extracting"
-    echo -e "  components, and generating embeddings. Hang tight!${NC}"
+    echo -e "  ${SHADOW}First startup takes 3-5 minutes — cloning repos, extracting${NC}"
+    echo -e "  ${SHADOW}components, and generating embeddings.${NC}"
     echo ""
 
     local timeout=300  # 5 minutes
     local elapsed=0
-    local interval=5
-    local phase="indexing"
+    local interval=3
+    local dashboard_lines=10  # Number of lines the dashboard occupies
 
     printf "${HIDE_CURSOR}"
 
+    # Draw initial dashboard
+    render_dashboard 0 "$timeout"
+
     while [ "$elapsed" -lt "$timeout" ]; do
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+
         # Check if mcp-server is healthy
         if docker compose ps 2>/dev/null | grep -q "mcp-server.*healthy"; then
-            printf "\r${CLEAR_LINE}"
+            # Erase dashboard
+            for ((i = 0; i < dashboard_lines; i++)); do
+                printf "${MOVE_UP}${CLEAR_LINE}"
+            done
             printf "${SHOW_CURSOR}"
-            echo ""
+
             ok "MCP server is healthy and ready!"
             return 0
         fi
 
         # Check if mcp-server exited/failed
         if docker compose ps 2>/dev/null | grep -q "mcp-server.*Exit"; then
-            printf "\r${CLEAR_LINE}"
+            for ((i = 0; i < dashboard_lines; i++)); do
+                printf "${MOVE_UP}${CLEAR_LINE}"
+            done
             printf "${SHOW_CURSOR}"
-            echo ""
+
             fail "MCP server exited unexpectedly."
-            echo -e "  ${DIM}Check logs: cd $INSTALL_DIR && docker compose logs mcp-server${NC}"
+            echo -e "  ${SHADOW}Check logs: cd $INSTALL_DIR && docker compose logs mcp-server${NC}"
             return 1
         fi
 
-        # Determine current phase from container status
-        if docker compose ps 2>/dev/null | grep -q "indexer.*running\|indexer.*Up"; then
-            phase="indexing"
-        elif docker compose ps 2>/dev/null | grep -q "mcp-server.*starting\|mcp-server.*Up"; then
-            phase="embedding"
-        fi
+        # Erase and redraw dashboard
+        for ((i = 0; i < dashboard_lines; i++)); do
+            printf "${MOVE_UP}${CLEAR_LINE}"
+        done
 
-        # Animated progress with phase info
-        local pct=$((elapsed * 100 / timeout))
-        local filled=$((pct * 30 / 100))
-        local empty=$((30 - filled))
-        local bar=""
-        for ((i = 0; i < filled; i++)); do bar+="█"; done
-        for ((i = 0; i < empty; i++)); do bar+="░"; done
-
-        local frame_idx=$((elapsed / interval % 8))
-        local spinner="${SPINNER_FRAMES[$frame_idx]}"
-
-        local phase_label=""
-        if [ "$phase" = "indexing" ]; then
-            phase_label="${YELLOW}Cloning repos & extracting components${NC}"
-        else
-            phase_label="${CYAN}Generating embeddings & indexing${NC}"
-        fi
-
-        printf "\r  ${CYAN}${spinner}${NC}  ${GREEN}${bar}${NC} ${DIM}${pct}%%${NC}  ${phase_label}  ${DIM}${elapsed}s${NC}  "
-
-        sleep "$interval"
-        elapsed=$((elapsed + interval))
+        render_dashboard "$elapsed" "$timeout"
     done
 
-    printf "\r${CLEAR_LINE}"
+    # Erase dashboard
+    for ((i = 0; i < dashboard_lines; i++)); do
+        printf "${MOVE_UP}${CLEAR_LINE}"
+    done
     printf "${SHOW_CURSOR}"
-    echo ""
+
     warn "Timed out after ${timeout}s. The server may still be indexing."
-    echo -e "  ${DIM}Check status: cd $INSTALL_DIR && docker compose ps${NC}"
-    echo -e "  ${DIM}Watch logs:   cd $INSTALL_DIR && docker compose logs -f mcp-server${NC}"
+    echo -e "  ${SHADOW}Check: cd $INSTALL_DIR && docker compose ps${NC}"
+    echo -e "  ${SHADOW}Logs:  cd $INSTALL_DIR && docker compose logs -f mcp-server${NC}"
+}
+
+render_dashboard() {
+    local elapsed=$1
+    local timeout=$2
+    local pct=$((elapsed * 100 / timeout))
+    [ "$pct" -gt 100 ] && pct=100
+
+    # Get container states
+    local compose_out
+    compose_out=$(docker compose ps 2>/dev/null || echo "")
+
+    # Parse each container's status
+    local pg_icon pg_status idx_icon idx_status mcp_icon mcp_status watch_icon watch_status
+    parse_service_status "$compose_out" "postgres"         pg_icon    pg_status
+    parse_service_status "$compose_out" "indexer"          idx_icon   idx_status
+    parse_service_status "$compose_out" "mcp-server"       mcp_icon   mcp_status
+    parse_service_status "$compose_out" "reindex-watcher"  watch_icon watch_status
+
+    # Progress bar
+    local bar_width=30
+    local filled=$((pct * bar_width / 100))
+    local empty=$((bar_width - filled))
+    local bar=""
+    for ((i = 0; i < filled; i++)); do bar+="═"; done
+    for ((i = 0; i < empty; i++)); do bar+="░"; done
+
+    local time_color
+    time_color=$(get_time_color "$elapsed")
+    local time_str=$(format_time "$elapsed")
+    local total_str=$(format_time "$timeout")
+
+    # Spinner frame
+    local frame_idx=$((elapsed / interval % 10))
+    local spinner="${SPINNER_FRAMES[$frame_idx]}"
+
+    # Render
+    echo -e "  ${SHADOW}┌─${NC} ${BOLD}Services${NC} ${SHADOW}$(repeat_char '─' $((TERM_WIDTH - 18)))┐${NC}"
+    echo -e "  ${SHADOW}│${NC}"
+    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$pg_icon"    "PostgreSQL"       "$pg_status"
+    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$idx_icon"   "Indexer"           "$idx_status"
+    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$mcp_icon"   "MCP Server"        "$mcp_status"
+    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$watch_icon" "Reindex Watcher"   "$watch_status"
+    echo -e "  ${SHADOW}│${NC}"
+    echo -e "  ${SHADOW}│${NC}  ${ACCENT}${spinner}${NC}  ${time_color}${bar}${NC}  ${SHADOW}${pct}%%${NC}  ${time_color}${time_str}${NC} ${SHADOW}/ ${total_str}${NC}"
+    echo -e "  ${SHADOW}│${NC}"
+    echo -e "  ${SHADOW}└$(repeat_char '─' $((TERM_WIDTH - 6)))┘${NC}"
+}
+
+parse_service_status() {
+    local compose_out="$1"
+    local service="$2"
+    local -n icon_ref=$3
+    local -n status_ref=$4
+
+    local line
+    line=$(echo "$compose_out" | grep -i "$service" | head -1)
+
+    if [ -z "$line" ]; then
+        icon_ref="${SHADOW}○${NC}"
+        status_ref="${SHADOW}Waiting${NC}"
+        return
+    fi
+
+    if echo "$line" | grep -qi "healthy"; then
+        icon_ref="${GREEN}${CHECK_PASS}${NC}"
+        status_ref="${GREEN}Healthy${NC}"
+    elif echo "$line" | grep -qi "running\|Up"; then
+        icon_ref="${CYAN}◐${NC}"
+        status_ref="${CYAN}Running${NC}"
+    elif echo "$line" | grep -qi "exit\|exited"; then
+        local code
+        code=$(echo "$line" | grep -oE 'Exit[ed]* [0-9]+' | grep -oE '[0-9]+' || echo "?")
+        if [ "$code" = "0" ]; then
+            icon_ref="${GREEN}${CHECK_PASS}${NC}"
+            status_ref="${GREEN}Completed${NC}"
+        else
+            icon_ref="${RED}${CHECK_FAIL}${NC}"
+            status_ref="${RED}Failed (exit $code)${NC}"
+        fi
+    elif echo "$line" | grep -qi "starting\|created"; then
+        icon_ref="${YELLOW}◐${NC}"
+        status_ref="${YELLOW}Starting${NC}"
+    else
+        icon_ref="${SHADOW}○${NC}"
+        status_ref="${SHADOW}Pending${NC}"
+    fi
 }
 
 # ──────────────────────────────────────────────
@@ -928,69 +1165,97 @@ print_success() {
 
     step_header "Setup Complete"
 
-    # Celebration banner
+    # Celebration banner with pulse effect
+    local banner_text="Vision UI MCP Server is running!"
+    local banner_sub="Your AI tools can now access the Vision UI component library."
+    local banner_width=$((${#banner_text} + 8))
+    local pad=$(repeat_char ' ' $(( (banner_width - ${#banner_text}) / 2 )) )
+    local pad2=$(repeat_char ' ' $(( (banner_width - ${#banner_sub}) / 2 )) )
+
+    # Pulse animation (3 cycles)
+    if [ -t 1 ] && [ "$TERM_COLORS" -ge 256 ]; then
+        local pulse_colors=(
+            '\033[38;5;28m'   # Dark green
+            '\033[38;5;34m'   # Medium green
+            '\033[38;5;40m'   # Bright green
+            '\033[38;5;82m'   # Vivid green
+            '\033[38;5;40m'   # Back down
+            '\033[38;5;34m'   # Medium
+        )
+        printf "${HIDE_CURSOR}"
+        for color in "${pulse_colors[@]}"; do
+            printf "\r  ${color}${BOLD}  ✦  ${banner_text}  ✦${NC}"
+            sleep 0.1
+        done
+        printf "\r${CLEAR_LINE}"
+        printf "${SHOW_CURSOR}"
+    fi
+
     echo ""
-    echo -e "  ${GREEN}${BOLD}  ╔══════════════════════════════════════════════════╗${NC}"
-    echo -e "  ${GREEN}${BOLD}  ║                                                  ║${NC}"
-    echo -e "  ${GREEN}${BOLD}  ║    ${NC}${GREEN}${BOLD}Vision UI MCP Server is running!${NC}${GREEN}${BOLD}            ║${NC}"
-    echo -e "  ${GREEN}${BOLD}  ║                                                  ║${NC}"
-    echo -e "  ${GREEN}${BOLD}  ║    ${NC}${DIM}Your AI tools can now access the${NC}${GREEN}${BOLD}              ║${NC}"
-    echo -e "  ${GREEN}${BOLD}  ║    ${NC}${DIM}Vision UI component library.${NC}${GREEN}${BOLD}                  ║${NC}"
-    echo -e "  ${GREEN}${BOLD}  ║                                                  ║${NC}"
-    echo -e "  ${GREEN}${BOLD}  ╚══════════════════════════════════════════════════╝${NC}"
+    echo -e "  ${GREEN}${BOLD}╔$(repeat_char '═' $((banner_width + 2)))╗${NC}"
+    echo -e "  ${GREEN}${BOLD}║${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}║${NC}"
+    echo -e "  ${GREEN}${BOLD}║${NC}  ${BOLD}  ✦  ${banner_text}  ✦${NC}              ${GREEN}${BOLD}║${NC}"
+    echo -e "  ${GREEN}${BOLD}║${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}║${NC}"
+    echo -e "  ${GREEN}${BOLD}║${NC}  ${SHADOW}${banner_sub}${NC}   ${GREEN}${BOLD}║${NC}"
+    echo -e "  ${GREEN}${BOLD}║${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}║${NC}"
+    echo -e "  ${GREEN}${BOLD}╚$(repeat_char '═' $((banner_width + 2)))╝${NC}"
     echo ""
 
     sleep 0.3
 
+    # ── Next Steps ──
     echo -e "  ${BOLD}Next Steps${NC}"
     echo ""
-    echo -e "  ${YELLOW}${BOLD}1.${NC} Add MCP config to your AI tool:"
+
+    echo -e "  ${ACCENT}${BOLD}1.${NC} Add MCP config to your AI tool:"
     echo ""
-    echo -e "     ${CYAN}VS Code / Copilot / Cursor${NC} → .vscode/mcp.json"
-    echo -e "     ${DIM}┌──────────────────────────────────────────┐${NC}"
-    echo -e "     ${DIM}│${NC}  {                                       ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}    \"servers\": {                           ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}      \"vision-ui\": {                      ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}        \"type\": \"http\",                    ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}        \"url\": \"http://localhost:${port}/mcp\" ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}      }                                    ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}    }                                      ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}  }                                        ${DIM}│${NC}"
-    echo -e "     ${DIM}└──────────────────────────────────────────┘${NC}"
+
+    echo -e "     ${CYAN}VS Code / Copilot / Cursor${NC} ${SHADOW}→ .vscode/mcp.json${NC}"
+    echo -e "     ${SHADOW}┌──────────────────────────────────────────┐${NC}"
+    echo -e "     ${SHADOW}│${NC}  {                                       ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}    \"servers\": {                           ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}      \"vision-ui\": {                      ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}        \"type\": \"http\",                    ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}        \"url\": \"http://localhost:${port}/mcp\" ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}      }                                    ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}    }                                      ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}  }                                        ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}└──────────────────────────────────────────┘${NC}"
     echo ""
-    echo -e "     ${MAGENTA}Claude Code${NC} → .claude/settings.json"
-    echo -e "     ${DIM}┌──────────────────────────────────────────┐${NC}"
-    echo -e "     ${DIM}│${NC}  {                                       ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}    \"mcpServers\": {                       ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}      \"vision-ui\": {                      ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}        \"type\": \"http\",                    ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}        \"url\": \"http://localhost:${port}/mcp\" ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}      }                                    ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}    }                                      ${DIM}│${NC}"
-    echo -e "     ${DIM}│${NC}  }                                        ${DIM}│${NC}"
-    echo -e "     ${DIM}└──────────────────────────────────────────┘${NC}"
+
+    echo -e "     ${MAGENTA}Claude Code${NC} ${SHADOW}→ .claude/settings.json${NC}"
+    echo -e "     ${SHADOW}┌──────────────────────────────────────────┐${NC}"
+    echo -e "     ${SHADOW}│${NC}  {                                       ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}    \"mcpServers\": {                       ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}      \"vision-ui\": {                      ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}        \"type\": \"http\",                    ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}        \"url\": \"http://localhost:${port}/mcp\" ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}      }                                    ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}    }                                      ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}│${NC}  }                                        ${SHADOW}│${NC}"
+    echo -e "     ${SHADOW}└──────────────────────────────────────────┘${NC}"
     echo ""
 
     sleep 0.2
 
-    echo -e "  ${YELLOW}${BOLD}2.${NC} Reload your editor"
-    echo -e "     ${DIM}VS Code: Cmd+Shift+P (Mac) / Ctrl+Shift+P → 'Reload Window'${NC}"
+    echo -e "  ${ACCENT}${BOLD}2.${NC} Reload your editor"
+    echo -e "     ${SHADOW}VS Code: Cmd+Shift+P (Mac) / Ctrl+Shift+P → 'Reload Window'${NC}"
     echo ""
-    echo -e "  ${YELLOW}${BOLD}3.${NC} Try it out"
-    echo -e "     ${DIM}Ask your AI: \"Search for Button component\"${NC}"
+    echo -e "  ${ACCENT}${BOLD}3.${NC} Try it out"
+    echo -e "     ${SHADOW}Ask your AI: \"Search for Button component\"${NC}"
     echo ""
 
-    echo -e "  ${DIM}────────────────────────────────────────────────────${NC}"
+    hr
     echo ""
-    echo -e "  ${BOLD}Day-to-day commands:${NC}"
+    echo -e "  ${BOLD}Day-to-day commands${NC}"
     echo ""
     echo -e "    ${GREEN}Start${NC}      cd ~/vision-ui-mcp && docker compose up -d"
     echo -e "    ${RED}Stop${NC}       cd ~/vision-ui-mcp && docker compose down"
-    echo -e "    ${BLUE}Logs${NC}       cd ~/vision-ui-mcp && docker compose logs -f"
+    echo -e "    ${ACCENT}Logs${NC}       cd ~/vision-ui-mcp && docker compose logs -f"
     echo -e "    ${CYAN}Update${NC}     cd ~/vision-ui-mcp && docker compose pull && docker compose up -d"
-    echo -e "    ${DIM}Uninstall${NC}  cd ~/vision-ui-mcp && docker compose down -v && rm -rf ~/vision-ui-mcp"
+    echo -e "    ${SHADOW}Uninstall${NC}  cd ~/vision-ui-mcp && docker compose down -v && rm -rf ~/vision-ui-mcp"
     echo ""
-    echo -e "  ${DIM}Need help? Check the README in $INSTALL_DIR or contact your team lead.${NC}"
+    echo -e "  ${SHADOW}Need help? Check the README in $INSTALL_DIR or contact your team lead.${NC}"
     echo ""
 }
 
@@ -1001,27 +1266,26 @@ print_success() {
 main() {
     clear 2>/dev/null || true
     echo ""
-    echo ""
 
     # Animated banner reveal
     local banner_lines=(
-        "  ${BLUE}${BOLD}  ╔══════════════════════════════════════════════════════════╗${NC}"
-        "  ${BLUE}${BOLD}  ║                                                          ║${NC}"
-        "  ${BLUE}${BOLD}  ║   ${NC}${BOLD}Vision UI MCP Server${NC}${BLUE}${BOLD}                                  ║${NC}"
-        "  ${BLUE}${BOLD}  ║   ${NC}${DIM}One-command setup for your AI coding tools${NC}${BLUE}${BOLD}              ║${NC}"
-        "  ${BLUE}${BOLD}  ║                                                          ║${NC}"
-        "  ${BLUE}${BOLD}  ║   ${NC}${DIM}Connects the Vision UI component library to${NC}${BLUE}${BOLD}            ║${NC}"
-        "  ${BLUE}${BOLD}  ║   ${NC}${DIM}GitHub Copilot, Claude Code, and Cursor.${NC}${BLUE}${BOLD}               ║${NC}"
-        "  ${BLUE}${BOLD}  ║                                                          ║${NC}"
-        "  ${BLUE}${BOLD}  ╚══════════════════════════════════════════════════════════╝${NC}"
+        "  ${ACCENT}${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
+        "  ${ACCENT}${BOLD}║${NC}                                                          ${ACCENT}${BOLD}║${NC}"
+        "  ${ACCENT}${BOLD}║${NC}   ${WHITE}${BOLD}Vision UI MCP Server${NC}                                  ${ACCENT}${BOLD}║${NC}"
+        "  ${ACCENT}${BOLD}║${NC}   ${SHADOW}One-command setup for your AI coding tools${NC}              ${ACCENT}${BOLD}║${NC}"
+        "  ${ACCENT}${BOLD}║${NC}                                                          ${ACCENT}${BOLD}║${NC}"
+        "  ${ACCENT}${BOLD}║${NC}   ${SHADOW}Connects the Vision UI component library to${NC}            ${ACCENT}${BOLD}║${NC}"
+        "  ${ACCENT}${BOLD}║${NC}   ${SHADOW}GitHub Copilot, Claude Code, and Cursor.${NC}               ${ACCENT}${BOLD}║${NC}"
+        "  ${ACCENT}${BOLD}║${NC}                                                          ${ACCENT}${BOLD}║${NC}"
+        "  ${ACCENT}${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
     )
     for line in "${banner_lines[@]}"; do
         echo -e "$line"
-        sleep 0.04
+        sleep 0.03
     done
 
     echo ""
-    sleep 0.3
+    sleep 0.2
 
     detect_platform
     preflight_checks
