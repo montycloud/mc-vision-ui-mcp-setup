@@ -661,7 +661,9 @@ preflight_checks() {
     if command -v lsof >/dev/null 2>&1; then
         if lsof -i :"$target_port" >/dev/null 2>&1; then
             port_in_use=true
-            port_owner=$(lsof -i :"$target_port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}' || echo "unknown")
+            # -c0 disables name truncation (macOS lsof defaults to 9 chars, which
+            # truncates "com.docker.backend" to "com.docke" and breaks detection).
+            port_owner=$(lsof -c0 -i :"$target_port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}' || echo "unknown")
         fi
     elif command -v ss >/dev/null 2>&1; then
         if ss -tlnp 2>/dev/null | grep -q ":${target_port} "; then
@@ -671,9 +673,15 @@ preflight_checks() {
     fi
 
     if $port_in_use; then
-        # If it's our own stack (docker-proxy / com.docker), that's fine -- restart will reclaim it
-        if echo "$port_owner" | grep -qi "docker\|com.docker\|docker-proxy"; then
+        # If it's Docker (our stack or Docker Desktop), that's fine -- restart/reinstall will reclaim it.
+        # Match "dock" prefix to handle lsof name truncation (e.g. "com.docke" for "com.docker.backend").
+        # Also match "vpnkit" which Docker Desktop uses for port forwarding on macOS.
+        if echo "$port_owner" | grep -qi "dock\|vpnkit"; then
             print_check "$CHECK_PASS" "Port ${target_port} (in use by Docker -- will reclaim on restart)" "$GREEN"
+        elif [ -d "$INSTALL_DIR" ]; then
+            # Existing installation directory exists -- port is likely held by the previous stack.
+            # The user will be prompted to Update/Reinstall which handles this.
+            print_check "$CHECK_PASS" "Port ${target_port} (existing installation -- will reclaim)" "$GREEN"
         else
             print_check "$CHECK_WARN" "Port ${target_port} in use by: ${port_owner}" "$YELLOW"
             echo ""
