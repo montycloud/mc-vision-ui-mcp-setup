@@ -1121,8 +1121,11 @@ wait_for_health() {
         sleep "$interval"
         elapsed=$((elapsed + interval))
 
-        # Real HTTP health check — only source of truth
-        if curl -sf --max-time 2 "http://localhost:${mcp_port}/health" >/dev/null 2>&1; then
+        # Real HTTP health check — only source of truth.
+        # Hit /mcp (the actual FastMCP endpoint). Any HTTP response means
+        # the server is up and serving. Without -f, curl returns 0 for any
+        # HTTP response and non-zero only on connection refused/timeout.
+        if curl -s -o /dev/null --max-time 2 "http://localhost:${mcp_port}/mcp" 2>/dev/null; then
             # Erase dashboard
             for ((i = 0; i < dashboard_lines; i++)); do
                 printf "${MOVE_UP}${CLEAR_LINE}"
@@ -1204,26 +1207,33 @@ render_dashboard() {
     local time_str
     time_str=$(format_time "$elapsed")
 
-    # Detect current indexing stage from recent logs
+    # Detect current indexing stage from recent logs.
+    # Checked most-recent-state first: each grep -qi matches case-insensitive.
     local stage_msg="Starting up..."
     local recent_logs
-    recent_logs=$(docker compose logs --tail=15 mcp-server 2>/dev/null || echo "")
-    if echo "$recent_logs" | grep -qi "All indexing complete"; then
-        stage_msg="All indexing complete -- waiting for health check"
-    elif echo "$recent_logs" | grep -qi "CocoIndex source code indexing complete"; then
-        stage_msg="Code indexing complete -- finalizing"
-    elif echo "$recent_logs" | grep -qi "Running CocoIndex\|source code indexing"; then
-        stage_msg="Indexing source code (embedding generation)..."
-    elif echo "$recent_logs" | grep -qi "rate limit\|429\|Rate"; then
-        stage_msg="Embedding generation (rate-limited, retrying)..."
-    elif echo "$recent_logs" | grep -qi "Starting MCP server\|metadata ready"; then
-        stage_msg="MCP server started -- running code indexing..."
-    elif echo "$recent_logs" | grep -qi "Running indexing pipeline\|metadata indexing"; then
-        stage_msg="Indexing component metadata..."
-    elif echo "$recent_logs" | grep -qi "Extracted data found\|extraction"; then
-        stage_msg="Processing extracted component data..."
-    elif echo "$recent_logs" | grep -qi "Waiting for extraction\|Checking for"; then
-        stage_msg="Waiting for component extraction..."
+    recent_logs=$(docker compose logs --tail=30 mcp-server 2>/dev/null || echo "")
+    if [ -n "$recent_logs" ]; then
+        if echo "$recent_logs" | grep -qi "Uvicorn running\|Application startup complete"; then
+            stage_msg="MCP server is running -- checking endpoint..."
+        elif echo "$recent_logs" | grep -qi "All indexing complete"; then
+            stage_msg="All indexing complete -- starting server..."
+        elif echo "$recent_logs" | grep -qi "CocoIndex source code indexing complete"; then
+            stage_msg="Code indexing complete -- finalizing..."
+        elif echo "$recent_logs" | grep -qi "rate.limit\|RateLimitError\|429\|Too Many Requests\|retry"; then
+            stage_msg="Embedding generation (rate-limited, retrying)..."
+        elif echo "$recent_logs" | grep -qi "Running CocoIndex\|source code indexing"; then
+            stage_msg="Indexing source code (embedding generation)..."
+        elif echo "$recent_logs" | grep -qi "Starting MCP server\|metadata ready"; then
+            stage_msg="MCP server starting -- code indexing next..."
+        elif echo "$recent_logs" | grep -qi "Indexed.*components\|Indexing complete"; then
+            stage_msg="Component metadata indexed -- starting server..."
+        elif echo "$recent_logs" | grep -qi "Running indexing pipeline\|metadata indexing"; then
+            stage_msg="Indexing component metadata..."
+        elif echo "$recent_logs" | grep -qi "Extracted data found\|component-docs"; then
+            stage_msg="Processing extracted component data..."
+        elif echo "$recent_logs" | grep -qi "Waiting for extraction\|Checking for"; then
+            stage_msg="Waiting for component extraction..."
+        fi
     fi
 
     # Spinner frame
@@ -1233,14 +1243,14 @@ render_dashboard() {
     # Render (12 lines)
     echo -e "  ${SHADOW}${BOX_TL}${BOX_H}${NC} ${BOLD}Services${NC} ${SHADOW}$(repeat_char "$BOX_H" $((TERM_WIDTH - 18)))${BOX_TR}${NC}"
     echo -e "  ${SHADOW}${BOX_V}${NC}"
-    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$pg_icon"    "PostgreSQL"       "$pg_status"
-    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$idx_icon"   "Indexer"           "$idx_status"
-    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$mcp_icon"   "MCP Server"        "$mcp_status"
-    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$watch_icon" "Reindex Watcher"   "$watch_status"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${pg_icon}  PostgreSQL           ${pg_status}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${idx_icon}  Indexer              ${idx_status}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${mcp_icon}  MCP Server           ${mcp_status}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${watch_icon}  Reindex Watcher      ${watch_status}"
     echo -e "  ${SHADOW}${BOX_V}${NC}"
     echo -e "  ${SHADOW}${BOX_V}${NC}  ${ACCENT}${spinner}${NC}  ${CYAN}${stage_msg}${NC}"
     echo -e "  ${SHADOW}${BOX_V}${NC}"
-    echo -e "  ${SHADOW}${BOX_V}${NC}  ${SHADOW}Elapsed:${NC} ${time_color}${time_str}${NC}  ${SHADOW}${BOX_H}${BOX_H}${NC}  ${SHADOW}Checking /health every 3s${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${SHADOW}Elapsed:${NC} ${time_color}${time_str}${NC}  ${SHADOW}${BOX_H}${BOX_H}${NC}  ${SHADOW}Polling /mcp every 3s${NC}"
     echo -e "  ${SHADOW}${BOX_V}${NC}"
     echo -e "  ${SHADOW}${BOX_BL}$(repeat_char "$BOX_H" $((TERM_WIDTH - 6)))${BOX_BR}${NC}"
 }
