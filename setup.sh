@@ -1102,33 +1102,33 @@ start_stack() {
 wait_for_health() {
     step_header "Indexing & Health Check"
 
-    echo -e "  ${SHADOW}First startup takes 3-5 minutes - cloning repos, extracting${NC}"
-    echo -e "  ${SHADOW}components, and generating embeddings.${NC}"
+    echo -e "  ${SHADOW}First startup takes 3-10 minutes -- cloning repos, extracting${NC}"
+    echo -e "  ${SHADOW}components, and generating embeddings. Embedding API rate limits${NC}"
+    echo -e "  ${SHADOW}may extend this on the first run.${NC}"
     echo ""
 
-    local timeout=300  # 5 minutes
     local elapsed=0
     local interval=3
-    local dashboard_lines=10  # Number of lines the dashboard occupies
+    local dashboard_lines=12  # Number of lines the dashboard occupies
+    local mcp_port="${MCP_PORT:-8080}"
 
     printf "${HIDE_CURSOR}"
 
     # Draw initial dashboard
-    render_dashboard 0 "$timeout"
+    render_dashboard "$elapsed"
 
-    while [ "$elapsed" -lt "$timeout" ]; do
+    while true; do
         sleep "$interval"
         elapsed=$((elapsed + interval))
 
-        # Check if mcp-server is healthy
-        if docker compose ps 2>/dev/null | grep -q "mcp-server.*healthy"; then
+        # Real HTTP health check — only source of truth
+        if curl -sf --max-time 2 "http://localhost:${mcp_port}/health" >/dev/null 2>&1; then
             # Erase dashboard
             for ((i = 0; i < dashboard_lines; i++)); do
                 printf "${MOVE_UP}${CLEAR_LINE}"
             done
             printf "${SHOW_CURSOR}"
-
-            ok "MCP server is healthy and ready!"
+            ok "MCP server is healthy and ready! (${elapsed}s)"
             return 0
         fi
 
@@ -1138,36 +1138,55 @@ wait_for_health() {
                 printf "${MOVE_UP}${CLEAR_LINE}"
             done
             printf "${SHOW_CURSOR}"
-
             fail "MCP server exited unexpectedly."
             echo -e "  ${SHADOW}Check logs: cd $INSTALL_DIR && docker compose logs mcp-server${NC}"
             return 1
         fi
 
-        # Erase and redraw dashboard
+        # Erase and redraw dashboard with latest state
         for ((i = 0; i < dashboard_lines; i++)); do
             printf "${MOVE_UP}${CLEAR_LINE}"
         done
-
-        render_dashboard "$elapsed" "$timeout"
+        render_dashboard "$elapsed"
     done
+}
 
-    # Erase dashboard
-    for ((i = 0; i < dashboard_lines; i++)); do
-        printf "${MOVE_UP}${CLEAR_LINE}"
-    done
-    printf "${SHOW_CURSOR}"
+# ──────────────────────────────────────────────
+# Tail live logs after server is healthy
+# ──────────────────────────────────────────────
+# Called AFTER print_success. Keeps the terminal session alive
+# with real-time server logs. Ctrl+C exits cleanly.
 
-    warn "Timed out after ${timeout}s. The server may still be indexing."
-    echo -e "  ${SHADOW}Check: cd $INSTALL_DIR && docker compose ps${NC}"
-    echo -e "  ${SHADOW}Logs:  cd $INSTALL_DIR && docker compose logs -f mcp-server${NC}"
+tail_live_logs() {
+    local mcp_port="${MCP_PORT:-8080}"
+
+    echo ""
+    hr
+    echo ""
+    echo -e "  ${ACCENT}${BOLD}${BOX_TL}${BOX_H}${NC} ${BOLD}Live Server Logs${NC} ${SHADOW}(Ctrl+C to exit)${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}"
+    echo ""
+
+    # Ctrl+C during log tailing is a normal exit — not an error
+    trap 'true' INT
+
+    # Tail logs in foreground — blocks until user Ctrl+C's
+    docker compose logs -f --tail=20 mcp-server 2>&1 || true
+
+    trap - INT
+
+    echo ""
+    echo -e "  ${SHADOW}${BOX_V}${NC}"
+    echo -e "  ${SHADOW}${BOX_BL}$(repeat_char "$BOX_H" $((TERM_WIDTH - 6)))${BOX_BR}${NC}"
+    echo ""
+    echo -e "  ${SHADOW}Server is still running in the background.${NC}"
+    echo -e "  ${SHADOW}Resume logs:${NC}  cd $INSTALL_DIR && docker compose logs -f mcp-server"
+    echo -e "  ${SHADOW}Stop server:${NC}  cd $INSTALL_DIR && docker compose down"
+    echo ""
 }
 
 render_dashboard() {
     local elapsed=$1
-    local timeout=$2
-    local pct=$((elapsed * 100 / timeout))
-    [ "$pct" -gt 100 ] && pct=100
 
     # Get container states
     local compose_out
@@ -1180,26 +1199,38 @@ render_dashboard() {
     parse_service_status "$compose_out" "mcp-server"       mcp_icon   mcp_status
     parse_service_status "$compose_out" "reindex-watcher"  watch_icon watch_status
 
-    # Progress bar
-    local bar_width=30
-    local filled=$((pct * bar_width / 100))
-    local empty=$((bar_width - filled))
-    local bar=""
-    local db_fill db_empty
-    if $HAS_UTF8; then db_fill="═"; db_empty="░"; else db_fill="="; db_empty="."; fi
-    for ((i = 0; i < filled; i++)); do bar+="$db_fill"; done
-    for ((i = 0; i < empty; i++)); do bar+="$db_empty"; done
-
     local time_color
     time_color=$(get_time_color "$elapsed")
-    local time_str=$(format_time "$elapsed")
-    local total_str=$(format_time "$timeout")
+    local time_str
+    time_str=$(format_time "$elapsed")
+
+    # Detect current indexing stage from recent logs
+    local stage_msg="Starting up..."
+    local recent_logs
+    recent_logs=$(docker compose logs --tail=15 mcp-server 2>/dev/null || echo "")
+    if echo "$recent_logs" | grep -qi "All indexing complete"; then
+        stage_msg="All indexing complete -- waiting for health check"
+    elif echo "$recent_logs" | grep -qi "CocoIndex source code indexing complete"; then
+        stage_msg="Code indexing complete -- finalizing"
+    elif echo "$recent_logs" | grep -qi "Running CocoIndex\|source code indexing"; then
+        stage_msg="Indexing source code (embedding generation)..."
+    elif echo "$recent_logs" | grep -qi "rate limit\|429\|Rate"; then
+        stage_msg="Embedding generation (rate-limited, retrying)..."
+    elif echo "$recent_logs" | grep -qi "Starting MCP server\|metadata ready"; then
+        stage_msg="MCP server started -- running code indexing..."
+    elif echo "$recent_logs" | grep -qi "Running indexing pipeline\|metadata indexing"; then
+        stage_msg="Indexing component metadata..."
+    elif echo "$recent_logs" | grep -qi "Extracted data found\|extraction"; then
+        stage_msg="Processing extracted component data..."
+    elif echo "$recent_logs" | grep -qi "Waiting for extraction\|Checking for"; then
+        stage_msg="Waiting for component extraction..."
+    fi
 
     # Spinner frame
-    local frame_idx=$((elapsed / interval % 10))
+    local frame_idx=$((elapsed / 3 % 10))
     local spinner="${SPINNER_FRAMES[$frame_idx]}"
 
-    # Render
+    # Render (12 lines)
     echo -e "  ${SHADOW}${BOX_TL}${BOX_H}${NC} ${BOLD}Services${NC} ${SHADOW}$(repeat_char "$BOX_H" $((TERM_WIDTH - 18)))${BOX_TR}${NC}"
     echo -e "  ${SHADOW}${BOX_V}${NC}"
     printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$pg_icon"    "PostgreSQL"       "$pg_status"
@@ -1207,7 +1238,9 @@ render_dashboard() {
     printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$mcp_icon"   "MCP Server"        "$mcp_status"
     printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$watch_icon" "Reindex Watcher"   "$watch_status"
     echo -e "  ${SHADOW}${BOX_V}${NC}"
-    echo -e "  ${SHADOW}${BOX_V}${NC}  ${ACCENT}${spinner}${NC}  ${time_color}${bar}${NC}  ${SHADOW}${pct}%%${NC}  ${time_color}${time_str}${NC} ${SHADOW}/ ${total_str}${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${ACCENT}${spinner}${NC}  ${CYAN}${stage_msg}${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${SHADOW}Elapsed:${NC} ${time_color}${time_str}${NC}  ${SHADOW}${BOX_H}${BOX_H}${NC}  ${SHADOW}Checking /health every 3s${NC}"
     echo -e "  ${SHADOW}${BOX_V}${NC}"
     echo -e "  ${SHADOW}${BOX_BL}$(repeat_char "$BOX_H" $((TERM_WIDTH - 6)))${BOX_BR}${NC}"
 }
@@ -1254,7 +1287,6 @@ parse_service_status() {
     eval "$status_var=\$_status"
 }
 
-# ──────────────────────────────────────────────
 # Print success message
 # ──────────────────────────────────────────────
 
@@ -1394,8 +1426,22 @@ main() {
     configure_env
     login_ghcr
     start_stack
-    wait_for_health
-    print_success
+
+    local health_result=0
+    wait_for_health || health_result=$?
+
+    if [ "$health_result" -eq 0 ]; then
+        # Server is healthy — show success, then keep terminal alive with logs
+        print_success
+        tail_live_logs
+    else
+        # Server crashed — error already printed by wait_for_health
+        echo ""
+        echo -e "  ${RED}${BOLD}Setup failed.${NC} The MCP server could not start."
+        echo -e "  ${SHADOW}Review the logs above and try again.${NC}"
+        echo ""
+        exit 1
+    fi
 }
 
 main "$@"

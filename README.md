@@ -188,9 +188,10 @@ In Copilot Chat or Claude Code, try: **"Search for Button component"** — you s
 
 | Tool | What It Does |
 |------|-------------|
-| `get_conventions` | Coding standards, naming rules, known inconsistencies — call first before generating code |
+| `get_conventions` | Library-wide coding conventions, naming rules, known inconsistencies — **mandatory prerequisite #1** |
+| `get_tailwind_config` | Custom Tailwind config (600+ semantic tokens, spacing, typography) — **mandatory prerequisite #2** |
 | `search` | Semantic search across component metadata and source code |
-| `get_component` | Full component details — props, variants, examples, usage, source |
+| `get_component` | Full component details — props, variants, conventions, examples, source, app usage |
 | `get_source` | Complete source code of any file from either repo |
 | `list_components` | All components grouped by category |
 
@@ -208,6 +209,14 @@ docker compose ps            # Check service status
 ```
 
 ---
+
+## Re-Running Setup
+
+If you run the setup script again on a machine that already has `~/vision-ui-mcp`, it will detect the existing installation and offer three options:
+
+1. **Update** — pulls the latest Docker images and restarts (keeps your data and config)
+2. **Reinstall** — removes everything and starts from scratch
+3. **Quit** — exits without changes
 
 ## Updating
 
@@ -256,7 +265,7 @@ sudo systemctl start docker
 
 ### Port 8080 already in use
 
-Another service is using port 8080. Change the port in your `.env` file:
+The setup script automatically detects port conflicts. If port 8080 is occupied by a non-Docker process, it will prompt you to choose an alternate port. If you need to change it after setup, edit your `.env` file:
 
 ```
 MCP_PORT=9090
@@ -310,6 +319,35 @@ You're likely in PowerShell instead of WSL2 or Git Bash. Open Ubuntu (from Start
 Increase Docker's memory allocation: Docker Desktop → Settings → Resources → set Memory to at least 4GB. On M1/M2 Macs, the default is usually fine.
 
 ---
+
+## Architecture
+
+The setup deploys a 4-service Docker stack:
+
+| Service | Image | Purpose |
+|---------|-------|---------|
+| `postgres` | pgvector/pgvector:pg16 | Vector database (pgvector + pg_trgm) |
+| `indexer` | vision-ui-indexer | One-shot: clones repos, extracts components, generates embeddings |
+| `mcp-server` | vision-ui-mcp-server | HTTP MCP endpoint for AI tools (port 8080) |
+| `reindex-watcher` | vision-ui-indexer | Polls repos every 2 min, re-indexes on changes |
+
+The indexer runs once and exits. The MCP server starts after indexing completes. The reindex-watcher keeps things up to date automatically.
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GIT_TOKEN` | Yes | — | GitHub PAT (scopes: `repo`, `read:packages`) |
+| `EMBEDDING_PROVIDER` | Yes | `openai` | `openai` or `bedrock` |
+| `OPENAI_API_KEY` | If openai | — | OpenAI API key |
+| `AWS_BEARER_TOKEN_BEDROCK` | If bedrock | — | Bedrock API key (long-term or short-term) |
+| `AWS_DEFAULT_REGION` | If bedrock | `us-east-1` | AWS region |
+| `MCP_PORT` | No | `8080` | Port for the MCP HTTP endpoint |
+| `POSTGRES_PASSWORD` | No | `vision_ui_dev` | Database password |
+| `EMBEDDING_MODEL` | No | `text-embedding-3-small` | OpenAI embedding model |
+| `POLL_INTERVAL` | No | `120` | Reindex watcher poll interval (seconds) |
+| `COOLDOWN` | No | `60` | Reindex debounce (seconds) |
+| `DEFAULT_BRANCH` | No | `main` | Git branch to track |
 
 ## System Requirements
 
