@@ -1075,9 +1075,12 @@ start_stack() {
         exit 1
     fi
 
-    # Start services with spinner (2 min timeout)
-    spinner_start "Starting PostgreSQL, Indexer, MCP Server..."
-    if with_timeout 120 docker compose up -d >/dev/null 2>&1; then
+    # Start services (no timeout — docker compose up -d blocks until
+    # dependency conditions are met. The indexer clones repos and runs
+    # extraction which takes 3-10 minutes; killing compose mid-flight
+    # leaves mcp-server unstarted).
+    spinner_start "Starting services (indexer may take several minutes on first run)..."
+    if docker compose up -d >/dev/null 2>&1; then
         spinner_stop
         ok "Services started"
     else
