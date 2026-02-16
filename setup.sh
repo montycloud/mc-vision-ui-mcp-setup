@@ -1134,7 +1134,10 @@ wait_for_health() {
                 printf "${MOVE_UP}${CLEAR_LINE}"
             done
             printf "${SHOW_CURSOR}"
-            ok "MCP server is healthy and ready! (${elapsed}s)"
+            ok "MCP server is responding (${elapsed}s)"
+            echo -e "  ${SHADOW}Code indexing may still be running in the background.${NC}"
+            echo -e "  ${SHADOW}Metadata tools (search, get_component) are available now.${NC}"
+            echo -e "  ${SHADOW}Code search will be ready once embedding completes.${NC}"
             return 0
         fi
 
@@ -1176,8 +1179,19 @@ tail_live_logs() {
     # Ctrl+C during log tailing is a normal exit — not an error
     trap 'true' INT
 
-    # Tail logs in foreground — blocks until user Ctrl+C's
-    docker compose logs -f --tail=20 mcp-server 2>&1 || true
+    # Tail logs in foreground — blocks until user Ctrl+C's.
+    # Filter out noisy CocoIndex SQL statements (INSERT/UPSERT bulk queries,
+    # parameter placeholders like $2114) which flood the terminal and are
+    # useless to the user. Keep meaningful log lines only.
+    docker compose logs -f --tail=20 mcp-server 2>&1 \
+        | grep --line-buffered -v \
+            -e 'INSERT INTO' \
+            -e 'ON CONFLICT' \
+            -e 'DO UPDATE SET' \
+            -e 'EXCLUDED\.' \
+            -e '(\$[0-9]\{2,\}' \
+            -e 'rows_affected=.*rows_returned=.*elapsed' \
+        || true
 
     trap - INT
 
@@ -1310,7 +1324,7 @@ print_success() {
 
     # Celebration banner with pulse effect
     local banner_text="Vision UI MCP Server is running!"
-    local banner_sub="Your AI tools can now access the Vision UI component library."
+    local banner_sub="Code indexing continues in background -- see live logs below."
     local banner_width=$((${#banner_text} + 8))
     local pad=$(repeat_char ' ' $(( (banner_width - ${#banner_text}) / 2 )) )
     local pad2=$(repeat_char ' ' $(( (banner_width - ${#banner_sub}) / 2 )) )
