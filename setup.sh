@@ -1180,9 +1180,10 @@ tail_live_logs() {
     trap 'true' INT
 
     # Tail logs in foreground — blocks until user Ctrl+C's.
-    # Filter out noisy CocoIndex SQL statements (INSERT/UPSERT bulk queries,
-    # parameter placeholders like $2114) which flood the terminal and are
-    # useless to the user. Keep meaningful log lines only.
+    # Filter out noise that floods the terminal:
+    #   - CocoIndex SQL bulk queries (INSERT/UPSERT, parameter placeholders)
+    #   - Docker healthcheck poll spam (GET /mcp 406, transport session creation)
+    #   - Internal row-level stats (rows_affected=…elapsed)
     docker compose logs -f --tail=20 mcp-server 2>&1 \
         | grep --line-buffered -v \
             -e 'INSERT INTO' \
@@ -1191,6 +1192,10 @@ tail_live_logs() {
             -e 'EXCLUDED\.' \
             -e '(\$[0-9]\{2,\}' \
             -e 'rows_affected=.*rows_returned=.*elapsed' \
+            -e '"GET /mcp HTTP' \
+            -e '"GET /health HTTP' \
+            -e 'Created new transport with session ID' \
+            -e '406 Not Acceptable' \
         || true
 
     trap - INT

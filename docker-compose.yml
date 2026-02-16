@@ -54,6 +54,11 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       # Bedrock API key — works for both long-term (ABSK...) and short-term (bedrock-api-key-...)
       AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
+      # Point Rust's reqwest/rustls TLS client to the system CA bundle.
+      # Without this, CocoIndex's Rust HTTP engine fails with TLS errors
+      # even though Python's OpenAI SDK works fine.
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+      SSL_CERT_DIR: /etc/ssl/certs
       VISION_UI_TRANSPORT: http
       VISION_UI_HTTP_HOST: 0.0.0.0
       VISION_UI_HTTP_PORT: 8080
