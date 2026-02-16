@@ -653,19 +653,49 @@ preflight_checks() {
         print_check "$CHECK_WARN" "RAM: ${total_ram_gb}GB (rec ${MIN_RAM_GB}GB)" "$YELLOW"
     fi
 
-    # -- Port 8080 --
+    # -- Port check & resolution --
+    local target_port="${MCP_PORT:-8080}"
+    local port_in_use=false
+    local port_owner=""
+
     if command -v lsof >/dev/null 2>&1; then
-        if lsof -i :8080 >/dev/null 2>&1; then
-            print_check "$CHECK_WARN" "Port 8080 in use" "$YELLOW"
-        else
-            print_check "$CHECK_PASS" "Port 8080 available" "$GREEN"
+        if lsof -i :"$target_port" >/dev/null 2>&1; then
+            port_in_use=true
+            port_owner=$(lsof -i :"$target_port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1}' || echo "unknown")
         fi
     elif command -v ss >/dev/null 2>&1; then
-        if ss -tlnp 2>/dev/null | grep -q ':8080 '; then
-            print_check "$CHECK_WARN" "Port 8080 in use" "$YELLOW"
-        else
-            print_check "$CHECK_PASS" "Port 8080 available" "$GREEN"
+        if ss -tlnp 2>/dev/null | grep -q ":${target_port} "; then
+            port_in_use=true
+            port_owner=$(ss -tlnp 2>/dev/null | grep ":${target_port} " | awk '{print $NF}' | head -1 || echo "unknown")
         fi
+    fi
+
+    if $port_in_use; then
+        # If it's our own stack (docker-proxy / com.docker), that's fine -- restart will reclaim it
+        if echo "$port_owner" | grep -qi "docker\|com.docker\|docker-proxy"; then
+            print_check "$CHECK_PASS" "Port ${target_port} (in use by Docker -- will reclaim on restart)" "$GREEN"
+        else
+            print_check "$CHECK_WARN" "Port ${target_port} in use by: ${port_owner}" "$YELLOW"
+            echo ""
+            echo -e "  ${YELLOW}${BOLD}Port ${target_port} is occupied by another process.${NC}"
+            echo -e "  ${SHADOW}You can either free the port or choose an alternate port.${NC}"
+            echo ""
+            local port_choice=""
+            prompt_user "  ${BOLD}Enter alternate port (or press Enter to try ${target_port} anyway):${NC} " port_choice
+            if [ -n "$port_choice" ]; then
+                # Validate it's a number
+                if ! echo "$port_choice" | grep -qE '^[0-9]+$'; then
+                    die "Invalid port number: ${port_choice}"
+                fi
+                if [ "$port_choice" -lt 1024 ] || [ "$port_choice" -gt 65535 ]; then
+                    die "Port must be between 1024 and 65535."
+                fi
+                export MCP_PORT="$port_choice"
+                print_check "$CHECK_PASS" "Will use port ${MCP_PORT}" "$GREEN"
+            fi
+        fi
+    else
+        print_check "$CHECK_PASS" "Port ${target_port} available" "$GREEN"
     fi
 
     # -- curl or wget --
@@ -1010,6 +1040,12 @@ login_ghcr() {
 start_stack() {
     step_header "Pull & Start Services"
 
+    # Persist custom port into .env if the user chose an alternate
+    if [ -n "${MCP_PORT:-}" ] && [ "$MCP_PORT" != "8080" ]; then
+        env_set .env MCP_PORT "$MCP_PORT"
+        info "Using custom port ${BOLD}${MCP_PORT}${NC}"
+    fi
+
     # Pull images with spinner (5 min timeout -large images on slow networks)
     spinner_start "Pulling Docker images ${SHADOW}(this may take a few minutes on first run)${NC}"
     if with_timeout 300 docker compose pull >/dev/null 2>&1; then
@@ -1042,7 +1078,8 @@ start_stack() {
         fail "Failed to start services."
         echo ""
         box_top "Troubleshooting"
-        box_line "${SHADOW}${BULLET} Port 8080 in use >Set MCP_PORT=9090 in .env${NC}"
+        local _p="${MCP_PORT:-8080}"
+        box_line "${SHADOW}${BULLET} Port ${_p} in use >Set MCP_PORT=<free_port> in .env${NC}"
         box_line "${SHADOW}${BULLET} Not enough memory >Increase Docker resources${NC}"
         box_line "${SHADOW}Check logs: cd $INSTALL_DIR && docker compose logs${NC}"
         box_bottom
