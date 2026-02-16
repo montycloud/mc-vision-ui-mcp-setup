@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Vision UI MCP Server — One-command setup
+# Vision UI MCP Server -One-command setup
 #
 # Supports: macOS (Apple Silicon + Intel), Linux (x64 + ARM), Windows (WSL2 + Git Bash)
 #
-# Usage (interactive — recommended):
+# Usage (interactive -recommended):
 #   bash <(curl -fsSL https://raw.githubusercontent.com/montycloud/mc-vision-ui-mcp-setup/main/setup.sh)
 #
-# Usage (piped — prompts for input):
+# Usage (piped -prompts for input):
 #   curl -fsSL https://raw.githubusercontent.com/montycloud/mc-vision-ui-mcp-setup/main/setup.sh | bash
 #
 #   Or if curl is not available:
 #   wget -qO- https://raw.githubusercontent.com/montycloud/mc-vision-ui-mcp-setup/main/setup.sh | bash
+
+# ──────────────────────────────────────────────
+# Shell compatibility guard
+# ──────────────────────────────────────────────
+# Requires bash 3.2+ (ships with every macOS and modern Linux).
+# No bash 4+ features are used (no namerefs, no associative arrays,
+# no case-modification expansions, no readarray/mapfile).
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "Error: This script requires bash. Run with: bash setup.sh" >&2
+    exit 1
+fi
 
 REPO="https://github.com/montycloud/mc-vision-ui-mcp-setup.git"
 INSTALL_DIR="${HOME}/vision-ui-mcp"
@@ -86,12 +97,43 @@ else
     BRIGHT_CYAN="$CYAN"
 fi
 
-# Status glyphs
-CHECK_PASS="●"
-CHECK_FAIL="✗"
-CHECK_WARN="◑"
-ARROW_RIGHT="›"
-BULLET="▸"
+# Detect UTF-8 support for safe glyph rendering
+HAS_UTF8=false
+if printf '%s' "${LANG:-}${LC_ALL:-}${LC_CTYPE:-}" | grep -qi 'utf'; then
+    HAS_UTF8=true
+fi
+
+# Status glyphs (ASCII fallback for non-UTF-8 terminals)
+if $HAS_UTF8; then
+    CHECK_PASS="●"
+    CHECK_FAIL="✗"
+    CHECK_WARN="◑"
+    ARROW_RIGHT="›"
+    BULLET="▸"
+    # Box-drawing characters
+    BOX_TL="┌" BOX_TR="┐" BOX_BL="└" BOX_BR="┘" BOX_H="─" BOX_V="│"
+else
+    CHECK_PASS="*"
+    CHECK_FAIL="x"
+    CHECK_WARN="!"
+    ARROW_RIGHT=">"
+    BULLET="-"
+    # ASCII box-drawing fallback
+    BOX_TL="+" BOX_TR="+" BOX_BL="+" BOX_BR="+" BOX_H="-" BOX_V="|"
+fi
+
+# Double-line box chars (for banners)
+if $HAS_UTF8; then
+    DBOX_TL="╔" DBOX_TR="╗" DBOX_BL="╚" DBOX_BR="╝" DBOX_H="═" DBOX_V="║"
+    HALF_CIRCLE="◐"
+    EMPTY_CIRCLE="○"
+    STAR="✦"
+else
+    DBOX_TL="+" DBOX_TR="+" DBOX_BL="+" DBOX_BR="+" DBOX_H="=" DBOX_V="|"
+    HALF_CIRCLE="~"
+    EMPTY_CIRCLE="o"
+    STAR="*"
+fi
 
 # ──────────────────────────────────────────────
 # Cleanup & error handling
@@ -118,7 +160,8 @@ trap 'echo -e "\n  ${RED}${CHECK_FAIL} Error on line ${LINENO}:${NC} command exi
 # Logging helpers
 # ──────────────────────────────────────────────
 
-info()  { echo -e "  ${ACCENT}ℹ${NC}  $1"; }
+INFO_ICON="i"; $HAS_UTF8 && INFO_ICON="ℹ"
+info()  { echo -e "  ${ACCENT}${INFO_ICON}${NC}  $1"; }
 ok()    { echo -e "  ${GREEN}${CHECK_PASS}${NC}  $1"; }
 warn()  { echo -e "  ${YELLOW}${CHECK_WARN}${NC}  $1"; }
 fail()  { echo -e "  ${RED}${CHECK_FAIL}${NC}  $1"; }
@@ -140,7 +183,7 @@ mask_secret() {
     if [ "$len" -le "$prefix_len" ]; then
         echo "$value"
     else
-        echo "${value:0:$prefix_len}••••••••"
+        echo "${value:0:$prefix_len}********"
     fi
 }
 
@@ -155,7 +198,7 @@ repeat_char() {
 # Draw a horizontal rule
 hr() {
     local width=$((TERM_WIDTH - 4))
-    echo -e "  ${SHADOW}$(repeat_char '─' "$width")${NC}"
+    echo -e "  ${SHADOW}$(repeat_char "$BOX_H" "$width")${NC}"
 }
 
 # ──────────────────────────────────────────────
@@ -169,33 +212,37 @@ box_top() {
         local title_len=${#title}
         local pad=$((width - title_len - 3))
         [ "$pad" -lt 2 ] && pad=2
-        echo -e "  ${SHADOW}┌─${NC} ${BOLD}${title}${NC} ${SHADOW}$(repeat_char '─' "$pad")┐${NC}"
+        echo -e "  ${SHADOW}${BOX_TL}${BOX_H}${NC} ${BOLD}${title}${NC} ${SHADOW}$(repeat_char "$BOX_H" "$pad")${BOX_TR}${NC}"
     else
-        echo -e "  ${SHADOW}┌$(repeat_char '─' "$((width))")┐${NC}"
+        echo -e "  ${SHADOW}${BOX_TL}$(repeat_char "$BOX_H" "$((width))")${BOX_TR}${NC}"
     fi
 }
 
 box_line() {
     local content="$1"
     local width=$((TERM_WIDTH - 6))
-    echo -e "  ${SHADOW}│${NC}  ${content}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${content}"
 }
 
 box_empty() {
-    echo -e "  ${SHADOW}│${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}"
 }
 
 box_bottom() {
     local width=$((TERM_WIDTH - 6))
-    echo -e "  ${SHADOW}└$(repeat_char '─' "$width")┘${NC}"
+    echo -e "  ${SHADOW}${BOX_BL}$(repeat_char "$BOX_H" "$width")${BOX_BR}${NC}"
 }
 
 # ──────────────────────────────────────────────
 # Animation helpers
 # ──────────────────────────────────────────────
 
-# Dots spinner — modern 10-frame animation
-SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+# Dots spinner -modern 10-frame animation (ASCII fallback for non-UTF-8)
+if $HAS_UTF8; then
+    SPINNER_FRAMES=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+else
+    SPINNER_FRAMES=('-' '\' '|' '/' '-' '\' '|' '/' '-' '/')
+fi
 SPINNER_PID=""
 
 spinner_start() {
@@ -252,7 +299,7 @@ step_header() {
     if [ "$CURRENT_STEP" -gt 1 ] && [ -n "$PREV_STEP_NAME" ]; then
         echo ""
         local elapsed=$(( $(date +%s) - SETUP_START_TIME ))
-        echo -e "  ${SHADOW}──${NC} ${GREEN}${CHECK_PASS}${NC} ${SHADOW}${PREV_STEP_NAME}${NC} ${SHADOW}$(repeat_char '─' $((TERM_WIDTH - ${#PREV_STEP_NAME} - 12)))${NC}"
+        echo -e "  ${SHADOW}${BOX_H}${BOX_H}${NC} ${GREEN}${CHECK_PASS}${NC} ${SHADOW}${PREV_STEP_NAME}${NC} ${SHADOW}$(repeat_char "$BOX_H" $((TERM_WIDTH - ${#PREV_STEP_NAME} - 12)))${NC}"
     fi
     PREV_STEP_NAME="$title"
 
@@ -261,8 +308,10 @@ step_header() {
     local filled=$((CURRENT_STEP * bar_width / TOTAL_STEPS))
     local empty=$((bar_width - filled))
     local bar=""
-    for ((i = 0; i < filled; i++)); do bar+="━"; done
-    for ((i = 0; i < empty; i++)); do bar+="╌"; done
+    local bar_fill bar_empty
+    if $HAS_UTF8; then bar_fill="━"; bar_empty="╌"; else bar_fill="="; bar_empty="."; fi
+    for ((i = 0; i < filled; i++)); do bar+="$bar_fill"; done
+    for ((i = 0; i < empty; i++)); do bar+="$bar_empty"; done
 
     echo ""
     echo -e "  ${ACCENT}${bar}${NC}  ${SHADOW}${CURRENT_STEP}/${TOTAL_STEPS}${NC}"
@@ -281,7 +330,7 @@ typewrite() {
     echo ""
 }
 
-# Run a command with a timeout (portable — works on macOS without coreutils)
+# Run a command with a timeout (portable -works on macOS without coreutils)
 # Usage: with_timeout 30 docker login ...
 # Returns 124 on timeout, otherwise the command's exit code.
 with_timeout() {
@@ -406,7 +455,7 @@ prompt_user() {
         read -r "$var_name" < /dev/tty
     else
         echo ""
-        fail "Cannot read input — no terminal available."
+        fail "Cannot read input -no terminal available."
         echo ""
         echo "  Run this script directly instead of piping:"
         echo "    bash <(curl -fsSL https://raw.githubusercontent.com/montycloud/mc-vision-ui-mcp-setup/main/setup.sh)"
@@ -425,7 +474,7 @@ prompt_user() {
     printf -v "$var_name" '%s' "$raw"
 }
 
-# Silent input for secrets (API keys, tokens) — hides typed/pasted text,
+# Silent input for secrets (API keys, tokens) -hides typed/pasted text,
 # shows a masked preview after entry.
 #
 # KEY FIX: macOS has a MAX_CANON kernel limit (~1024 bytes) for terminal
@@ -446,7 +495,7 @@ prompt_secret() {
         tty_fd="/dev/tty"
     else
         echo ""
-        fail "Cannot read input — no terminal available."
+        fail "Cannot read input -no terminal available."
         exit 1
     fi
 
@@ -503,7 +552,7 @@ preflight_checks() {
         errors=$((errors + 1))
     fi
 
-    # Animated checklist — each item reveals with a brief pause
+    # Animated checklist -each item reveals with a brief pause
     local col_width=36
     local col=0  # 0 = left column, 1 = right column
 
@@ -511,11 +560,11 @@ preflight_checks() {
     print_check() {
         local icon="$1" label="$2" color="$3"
         if [ "$col" -eq 0 ]; then
-            # Left column — print without newline, pad to col_width
+            # Left column -print without newline, pad to col_width
             printf "  ${color}${icon}${NC}  %-${col_width}s" "$label"
             col=1
         else
-            # Right column — print with newline
+            # Right column -print with newline
             printf "${color}${icon}${NC}  %s\n" "$label"
             col=0
         fi
@@ -668,9 +717,9 @@ check_existing() {
         echo ""
 
         box_top "Choose Action"
-        box_line "${GREEN}1${NC}  Update     ${SHADOW}— Pull latest images and restart${NC}"
-        box_line "${YELLOW}2${NC}  Reinstall  ${SHADOW}— Remove everything and start fresh${NC}"
-        box_line "${SHADOW}3${NC}  Quit       ${SHADOW}— Exit without changes${NC}"
+        box_line "${GREEN}1${NC}  Update     ${SHADOW}-- Pull latest images and restart${NC}"
+        box_line "${YELLOW}2${NC}  Reinstall  ${SHADOW}-- Remove everything and start fresh${NC}"
+        box_line "${SHADOW}3${NC}  Quit       ${SHADOW}-- Exit without changes${NC}"
         box_bottom
         echo ""
 
@@ -739,19 +788,19 @@ env_set() {
     local file="$1" key="$2" value="$3"
     local tmp="${file}.tmp.$$"
     if grep -q "^${key}=" "$file" 2>/dev/null; then
-        # Key exists (uncommented) — replace the line
+        # Key exists (uncommented) -replace the line
         _ENVSET_K="$key" _ENVSET_V="$value" \
             awk 'BEGIN{k=ENVIRON["_ENVSET_K"]; v=ENVIRON["_ENVSET_V"]}
                  {split($0,a,"="); if(a[1]==k){print k"="v}else{print}}' "$file" > "$tmp"
         mv "$tmp" "$file"
     elif grep -q "^# *${key}=" "$file" 2>/dev/null; then
-        # Key exists (commented out) — uncomment and set
+        # Key exists (commented out) -uncomment and set
         _ENVSET_K="$key" _ENVSET_V="$value" \
             awk 'BEGIN{k=ENVIRON["_ENVSET_K"]; v=ENVIRON["_ENVSET_V"]}
                  {if($0 ~ "^# *"k"="){print k"="v}else{print}}' "$file" > "$tmp"
         mv "$tmp" "$file"
     else
-        # Key doesn't exist — append
+        # Key doesn't exist -append
         printf '%s=%s\n' "$key" "$value" >> "$file"
     fi
 }
@@ -783,15 +832,15 @@ configure_env() {
     box_top "Embedding Provider"
     box_line "Semantic search requires an embedding provider."
     box_empty
-    box_line "  ${GREEN}1${NC}  OpenAI   ${SHADOW}— API key from platform.openai.com${NC}"
-    box_line "  ${CYAN}2${NC}  Bedrock  ${SHADOW}— AWS API key (recommended for MontyCloud)${NC}"
+    box_line "  ${GREEN}1${NC}  OpenAI   ${SHADOW}-- API key from platform.openai.com${NC}"
+    box_line "  ${CYAN}2${NC}  Bedrock  ${SHADOW}-- AWS API key (recommended for MontyCloud)${NC}"
     box_bottom
     echo ""
 
     prompt_user "  ${BOLD}Enter 1 or 2 [1]:${NC} " EMBEDDING_CHOICE
     EMBEDDING_CHOICE="${EMBEDDING_CHOICE:-1}"
 
-    if [[ "$EMBEDDING_CHOICE" == "2" ]]; then
+    if [ "$EMBEDDING_CHOICE" = "2" ]; then
         configure_bedrock
     else
         configure_openai
@@ -812,10 +861,10 @@ configure_bedrock() {
     box_top "AWS Bedrock Setup"
     box_line "Choose your API key type:"
     box_empty
-    box_line "  ${GREEN}a${NC}  Long-term   ${SHADOW}— custom expiry, starts with ABSK...${NC}"
-    box_line "  ${YELLOW}b${NC}  Short-term  ${SHADOW}— up to 12 hours, starts with bedrock-api-key-...${NC}"
+    box_line "  ${GREEN}a${NC}  Long-term   ${SHADOW}-- custom expiry, starts with ABSK...${NC}"
+    box_line "  ${YELLOW}b${NC}  Short-term  ${SHADOW}-- up to 12 hours, starts with bedrock-api-key-...${NC}"
     box_empty
-    box_line "${SHADOW}Both are single bearer tokens — just different expiration.${NC}"
+    box_line "${SHADOW}Both are single bearer tokens -just different expiration.${NC}"
     box_bottom
     echo ""
 
@@ -828,16 +877,16 @@ configure_bedrock() {
     BEDROCK_REGION="${BEDROCK_REGION:-us-east-1}"
     CFG_REGION="$BEDROCK_REGION"
 
-    if [[ "$key_type" == "b" || "$key_type" == "B" ]]; then
+    if [ "$key_type" = "b" ] || [ "$key_type" = "B" ]; then
         CFG_KEY_TYPE="short-term"
         echo ""
         echo -e "  ${SHADOW}Generate at: AWS Console ${ARROW_RIGHT} Amazon Bedrock ${ARROW_RIGHT} API keys ${ARROW_RIGHT} Short-term${NC}"
         echo ""
 
         prompt_secret "  ${BOLD}Bedrock short-term API key:${NC} " BEDROCK_API_KEY
-        [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console → Amazon Bedrock → API keys."
+        [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console >Amazon Bedrock >API keys."
 
-        # Write .env — use env_set (not sed) so 1000+ char keys work reliably
+        # Write .env -use env_set (not sed) so 1000+ char keys work reliably
         env_set .env GIT_TOKEN "$GIT_TOKEN"
         env_set .env EMBEDDING_PROVIDER "bedrock"
         env_set .env AWS_BEARER_TOKEN_BEDROCK "$BEDROCK_API_KEY"
@@ -857,7 +906,7 @@ configure_bedrock() {
         echo ""
 
         prompt_secret "  ${BOLD}Bedrock API key (ABSK...):${NC} " BEDROCK_API_KEY
-        [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console → Amazon Bedrock → API keys."
+        [ -z "${BEDROCK_API_KEY:-}" ] && die "Bedrock API key is required. Generate one at: AWS Console >Amazon Bedrock >API keys."
 
         # Write .env
         env_set .env GIT_TOKEN "$GIT_TOKEN"
@@ -945,10 +994,10 @@ login_ghcr() {
         local rc=$?
         spinner_stop
         if [ "$rc" -eq 124 ]; then
-            warn "ghcr.io login timed out (30s) — continuing anyway."
+            warn "ghcr.io login timed out (30s) -continuing anyway."
             echo -e "    ${SHADOW}Docker credential helper may be slow. Images will still pull if public.${NC}"
         else
-            warn "ghcr.io login failed — images may not pull if private."
+            warn "ghcr.io login failed -images may not pull if private."
             echo -e "    ${SHADOW}Fix: echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin${NC}"
         fi
     fi
@@ -961,7 +1010,7 @@ login_ghcr() {
 start_stack() {
     step_header "Pull & Start Services"
 
-    # Pull images with spinner (5 min timeout — large images on slow networks)
+    # Pull images with spinner (5 min timeout -large images on slow networks)
     spinner_start "Pulling Docker images ${SHADOW}(this may take a few minutes on first run)${NC}"
     if with_timeout 300 docker compose pull >/dev/null 2>&1; then
         spinner_stop
@@ -976,7 +1025,7 @@ start_stack() {
         box_line "${SHADOW}${BULLET} Network/firewall blocking ghcr.io${NC}"
         box_line "${SHADOW}${BULLET} GitHub token missing 'read:packages' scope${NC}"
         box_empty
-        box_line "${SHADOW}Files saved in $INSTALL_DIR — fix the issue and run:${NC}"
+        box_line "${SHADOW}Files saved in $INSTALL_DIR -fix the issue and run:${NC}"
         box_line "cd $INSTALL_DIR && docker compose up -d"
         box_bottom
         exit 1
@@ -993,8 +1042,8 @@ start_stack() {
         fail "Failed to start services."
         echo ""
         box_top "Troubleshooting"
-        box_line "${SHADOW}${BULLET} Port 8080 in use → Set MCP_PORT=9090 in .env${NC}"
-        box_line "${SHADOW}${BULLET} Not enough memory → Increase Docker resources${NC}"
+        box_line "${SHADOW}${BULLET} Port 8080 in use >Set MCP_PORT=9090 in .env${NC}"
+        box_line "${SHADOW}${BULLET} Not enough memory >Increase Docker resources${NC}"
         box_line "${SHADOW}Check logs: cd $INSTALL_DIR && docker compose logs${NC}"
         box_bottom
         exit 1
@@ -1002,13 +1051,13 @@ start_stack() {
 }
 
 # ──────────────────────────────────────────────
-# Wait for health — Live container dashboard
+# Wait for health -Live container dashboard
 # ──────────────────────────────────────────────
 
 wait_for_health() {
     step_header "Indexing & Health Check"
 
-    echo -e "  ${SHADOW}First startup takes 3-5 minutes — cloning repos, extracting${NC}"
+    echo -e "  ${SHADOW}First startup takes 3-5 minutes - cloning repos, extracting${NC}"
     echo -e "  ${SHADOW}components, and generating embeddings.${NC}"
     echo ""
 
@@ -1091,8 +1140,10 @@ render_dashboard() {
     local filled=$((pct * bar_width / 100))
     local empty=$((bar_width - filled))
     local bar=""
-    for ((i = 0; i < filled; i++)); do bar+="═"; done
-    for ((i = 0; i < empty; i++)); do bar+="░"; done
+    local db_fill db_empty
+    if $HAS_UTF8; then db_fill="═"; db_empty="░"; else db_fill="="; db_empty="."; fi
+    for ((i = 0; i < filled; i++)); do bar+="$db_fill"; done
+    for ((i = 0; i < empty; i++)); do bar+="$db_empty"; done
 
     local time_color
     time_color=$(get_time_color "$elapsed")
@@ -1104,56 +1155,58 @@ render_dashboard() {
     local spinner="${SPINNER_FRAMES[$frame_idx]}"
 
     # Render
-    echo -e "  ${SHADOW}┌─${NC} ${BOLD}Services${NC} ${SHADOW}$(repeat_char '─' $((TERM_WIDTH - 18)))┐${NC}"
-    echo -e "  ${SHADOW}│${NC}"
-    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$pg_icon"    "PostgreSQL"       "$pg_status"
-    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$idx_icon"   "Indexer"           "$idx_status"
-    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$mcp_icon"   "MCP Server"        "$mcp_status"
-    printf "  ${SHADOW}│${NC}  %s  %-20s %s\n" "$watch_icon" "Reindex Watcher"   "$watch_status"
-    echo -e "  ${SHADOW}│${NC}"
-    echo -e "  ${SHADOW}│${NC}  ${ACCENT}${spinner}${NC}  ${time_color}${bar}${NC}  ${SHADOW}${pct}%%${NC}  ${time_color}${time_str}${NC} ${SHADOW}/ ${total_str}${NC}"
-    echo -e "  ${SHADOW}│${NC}"
-    echo -e "  ${SHADOW}└$(repeat_char '─' $((TERM_WIDTH - 6)))┘${NC}"
+    echo -e "  ${SHADOW}${BOX_TL}${BOX_H}${NC} ${BOLD}Services${NC} ${SHADOW}$(repeat_char "$BOX_H" $((TERM_WIDTH - 18)))${BOX_TR}${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}"
+    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$pg_icon"    "PostgreSQL"       "$pg_status"
+    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$idx_icon"   "Indexer"           "$idx_status"
+    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$mcp_icon"   "MCP Server"        "$mcp_status"
+    printf "  ${SHADOW}${BOX_V}${NC}  %s  %-20s %s\n" "$watch_icon" "Reindex Watcher"   "$watch_status"
+    echo -e "  ${SHADOW}${BOX_V}${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}  ${ACCENT}${spinner}${NC}  ${time_color}${bar}${NC}  ${SHADOW}${pct}%%${NC}  ${time_color}${time_str}${NC} ${SHADOW}/ ${total_str}${NC}"
+    echo -e "  ${SHADOW}${BOX_V}${NC}"
+    echo -e "  ${SHADOW}${BOX_BL}$(repeat_char "$BOX_H" $((TERM_WIDTH - 6)))${BOX_BR}${NC}"
 }
 
 parse_service_status() {
     local compose_out="$1"
     local service="$2"
-    local -n icon_ref=$3
-    local -n status_ref=$4
+    local icon_var=$3
+    local status_var=$4
 
     local line
     line=$(echo "$compose_out" | grep -i "$service" | head -1)
 
-    if [ -z "$line" ]; then
-        icon_ref="${SHADOW}○${NC}"
-        status_ref="${SHADOW}Waiting${NC}"
-        return
-    fi
+    local _icon _status
 
-    if echo "$line" | grep -qi "healthy"; then
-        icon_ref="${GREEN}${CHECK_PASS}${NC}"
-        status_ref="${GREEN}Healthy${NC}"
+    if [ -z "$line" ]; then
+        _icon="${SHADOW}${EMPTY_CIRCLE}${NC}"
+        _status="${SHADOW}Waiting${NC}"
+    elif echo "$line" | grep -qi "healthy"; then
+        _icon="${GREEN}${CHECK_PASS}${NC}"
+        _status="${GREEN}Healthy${NC}"
     elif echo "$line" | grep -qi "running\|Up"; then
-        icon_ref="${CYAN}◐${NC}"
-        status_ref="${CYAN}Running${NC}"
+        _icon="${CYAN}${HALF_CIRCLE}${NC}"
+        _status="${CYAN}Running${NC}"
     elif echo "$line" | grep -qi "exit\|exited"; then
         local code
         code=$(echo "$line" | grep -oE 'Exit[ed]* [0-9]+' | grep -oE '[0-9]+' || echo "?")
         if [ "$code" = "0" ]; then
-            icon_ref="${GREEN}${CHECK_PASS}${NC}"
-            status_ref="${GREEN}Completed${NC}"
+            _icon="${GREEN}${CHECK_PASS}${NC}"
+            _status="${GREEN}Completed${NC}"
         else
-            icon_ref="${RED}${CHECK_FAIL}${NC}"
-            status_ref="${RED}Failed (exit $code)${NC}"
+            _icon="${RED}${CHECK_FAIL}${NC}"
+            _status="${RED}Failed (exit $code)${NC}"
         fi
     elif echo "$line" | grep -qi "starting\|created"; then
-        icon_ref="${YELLOW}◐${NC}"
-        status_ref="${YELLOW}Starting${NC}"
+        _icon="${YELLOW}${HALF_CIRCLE}${NC}"
+        _status="${YELLOW}Starting${NC}"
     else
-        icon_ref="${SHADOW}○${NC}"
-        status_ref="${SHADOW}Pending${NC}"
+        _icon="${SHADOW}${EMPTY_CIRCLE}${NC}"
+        _status="${SHADOW}Pending${NC}"
     fi
+
+    eval "$icon_var=\$_icon"
+    eval "$status_var=\$_status"
 }
 
 # ──────────────────────────────────────────────
@@ -1184,7 +1237,7 @@ print_success() {
         )
         printf "${HIDE_CURSOR}"
         for color in "${pulse_colors[@]}"; do
-            printf "\r  ${color}${BOLD}  ✦  ${banner_text}  ✦${NC}"
+            printf "\r  ${color}${BOLD}  ${STAR}  ${banner_text}  ${STAR}${NC}"
             sleep 0.1
         done
         printf "\r${CLEAR_LINE}"
@@ -1192,13 +1245,13 @@ print_success() {
     fi
 
     echo ""
-    echo -e "  ${GREEN}${BOLD}╔$(repeat_char '═' $((banner_width + 2)))╗${NC}"
-    echo -e "  ${GREEN}${BOLD}║${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}║${NC}"
-    echo -e "  ${GREEN}${BOLD}║${NC}  ${BOLD}  ✦  ${banner_text}  ✦${NC}              ${GREEN}${BOLD}║${NC}"
-    echo -e "  ${GREEN}${BOLD}║${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}║${NC}"
-    echo -e "  ${GREEN}${BOLD}║${NC}  ${SHADOW}${banner_sub}${NC}   ${GREEN}${BOLD}║${NC}"
-    echo -e "  ${GREEN}${BOLD}║${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}║${NC}"
-    echo -e "  ${GREEN}${BOLD}╚$(repeat_char '═' $((banner_width + 2)))╝${NC}"
+    echo -e "  ${GREEN}${BOLD}${DBOX_TL}$(repeat_char "$DBOX_H" $((banner_width + 2)))${DBOX_TR}${NC}"
+    echo -e "  ${GREEN}${BOLD}${DBOX_V}${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}${DBOX_V}${NC}"
+    echo -e "  ${GREEN}${BOLD}${DBOX_V}${NC}  ${BOLD}  ${STAR}  ${banner_text}  ${STAR}${NC}              ${GREEN}${BOLD}${DBOX_V}${NC}"
+    echo -e "  ${GREEN}${BOLD}${DBOX_V}${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}${DBOX_V}${NC}"
+    echo -e "  ${GREEN}${BOLD}${DBOX_V}${NC}  ${SHADOW}${banner_sub}${NC}   ${GREEN}${BOLD}${DBOX_V}${NC}"
+    echo -e "  ${GREEN}${BOLD}${DBOX_V}${NC}  ${pad}${NC}                                        ${GREEN}${BOLD}${DBOX_V}${NC}"
+    echo -e "  ${GREEN}${BOLD}${DBOX_BL}$(repeat_char "$DBOX_H" $((banner_width + 2)))${DBOX_BR}${NC}"
     echo ""
 
     sleep 0.3
@@ -1210,36 +1263,36 @@ print_success() {
     echo -e "  ${ACCENT}${BOLD}1.${NC} Add MCP config to your AI tool:"
     echo ""
 
-    echo -e "     ${CYAN}VS Code / Copilot / Cursor${NC} ${SHADOW}→ .vscode/mcp.json${NC}"
-    echo -e "     ${SHADOW}┌──────────────────────────────────────────┐${NC}"
-    echo -e "     ${SHADOW}│${NC}  {                                       ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}    \"servers\": {                           ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}      \"vision-ui\": {                      ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}        \"type\": \"http\",                    ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}        \"url\": \"http://localhost:${port}/mcp\" ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}      }                                    ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}    }                                      ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}  }                                        ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}└──────────────────────────────────────────┘${NC}"
+    echo -e "     ${CYAN}VS Code / Copilot / Cursor${NC} ${SHADOW}${ARROW_RIGHT} .vscode/mcp.json${NC}"
+    echo -e "     ${SHADOW}${BOX_TL}$(repeat_char "$BOX_H" 42)${BOX_TR}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}  {                                       ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}    \"servers\": {                           ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}      \"vision-ui\": {                      ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}        \"type\": \"http\",                    ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}        \"url\": \"http://localhost:${port}/mcp\" ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}      }                                    ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}    }                                      ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}  }                                        ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_BL}$(repeat_char "$BOX_H" 42)${BOX_BR}${NC}"
     echo ""
 
-    echo -e "     ${MAGENTA}Claude Code${NC} ${SHADOW}→ .claude/settings.json${NC}"
-    echo -e "     ${SHADOW}┌──────────────────────────────────────────┐${NC}"
-    echo -e "     ${SHADOW}│${NC}  {                                       ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}    \"mcpServers\": {                       ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}      \"vision-ui\": {                      ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}        \"type\": \"http\",                    ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}        \"url\": \"http://localhost:${port}/mcp\" ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}      }                                    ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}    }                                      ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}│${NC}  }                                        ${SHADOW}│${NC}"
-    echo -e "     ${SHADOW}└──────────────────────────────────────────┘${NC}"
+    echo -e "     ${MAGENTA}Claude Code${NC} ${SHADOW}${ARROW_RIGHT} .claude/settings.json${NC}"
+    echo -e "     ${SHADOW}${BOX_TL}$(repeat_char "$BOX_H" 42)${BOX_TR}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}  {                                       ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}    \"mcpServers\": {                       ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}      \"vision-ui\": {                      ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}        \"type\": \"http\",                    ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}        \"url\": \"http://localhost:${port}/mcp\" ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}      }                                    ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}    }                                      ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_V}${NC}  }                                        ${SHADOW}${BOX_V}${NC}"
+    echo -e "     ${SHADOW}${BOX_BL}$(repeat_char "$BOX_H" 42)${BOX_BR}${NC}"
     echo ""
 
     sleep 0.2
 
     echo -e "  ${ACCENT}${BOLD}2.${NC} Reload your editor"
-    echo -e "     ${SHADOW}VS Code: Cmd+Shift+P (Mac) / Ctrl+Shift+P → 'Reload Window'${NC}"
+    echo -e "     ${SHADOW}VS Code: Cmd+Shift+P (Mac) / Ctrl+Shift+P >'Reload Window'${NC}"
     echo ""
     echo -e "  ${ACCENT}${BOLD}3.${NC} Try it out"
     echo -e "     ${SHADOW}Ask your AI: \"Search for Button component\"${NC}"
@@ -1268,16 +1321,18 @@ main() {
     echo ""
 
     # Animated banner reveal
+    local dbox_line
+    dbox_line=$(repeat_char "$DBOX_H" 58)
     local banner_lines=(
-        "  ${ACCENT}${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
-        "  ${ACCENT}${BOLD}║${NC}                                                          ${ACCENT}${BOLD}║${NC}"
-        "  ${ACCENT}${BOLD}║${NC}   ${WHITE}${BOLD}Vision UI MCP Server${NC}                                  ${ACCENT}${BOLD}║${NC}"
-        "  ${ACCENT}${BOLD}║${NC}   ${SHADOW}One-command setup for your AI coding tools${NC}              ${ACCENT}${BOLD}║${NC}"
-        "  ${ACCENT}${BOLD}║${NC}                                                          ${ACCENT}${BOLD}║${NC}"
-        "  ${ACCENT}${BOLD}║${NC}   ${SHADOW}Connects the Vision UI component library to${NC}            ${ACCENT}${BOLD}║${NC}"
-        "  ${ACCENT}${BOLD}║${NC}   ${SHADOW}GitHub Copilot, Claude Code, and Cursor.${NC}               ${ACCENT}${BOLD}║${NC}"
-        "  ${ACCENT}${BOLD}║${NC}                                                          ${ACCENT}${BOLD}║${NC}"
-        "  ${ACCENT}${BOLD}╚══════════════════════════════════════════════════════════╝${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_TL}${dbox_line}${DBOX_TR}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_V}${NC}                                                          ${ACCENT}${BOLD}${DBOX_V}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_V}${NC}   ${WHITE}${BOLD}Vision UI MCP Server${NC}                                  ${ACCENT}${BOLD}${DBOX_V}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_V}${NC}   ${SHADOW}One-command setup for your AI coding tools${NC}              ${ACCENT}${BOLD}${DBOX_V}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_V}${NC}                                                          ${ACCENT}${BOLD}${DBOX_V}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_V}${NC}   ${SHADOW}Connects the Vision UI component library to${NC}            ${ACCENT}${BOLD}${DBOX_V}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_V}${NC}   ${SHADOW}GitHub Copilot, Claude Code, and Cursor.${NC}               ${ACCENT}${BOLD}${DBOX_V}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_V}${NC}                                                          ${ACCENT}${BOLD}${DBOX_V}${NC}"
+        "  ${ACCENT}${BOLD}${DBOX_BL}${dbox_line}${DBOX_BR}${NC}"
     )
     for line in "${banner_lines[@]}"; do
         echo -e "$line"
